@@ -265,9 +265,10 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
           outName,
         ];
 
-        // Run in main thread — no Worker, no SharedArrayBuffer
-        const ret = core.ccall("ffmpeg_exec", "number", ["number", "string"],
-          [args.length, args.join("\0")]);
+        // Reset ffmpeg state before each exec (required by core)
+        core.reset();
+        // core.exec() takes spread args (like ffmpeg CLI), returns exit code
+        const ret = core.exec(...args);
         if (ret !== 0) throw new Error(`FFmpeg error (código ${ret}) en clip ${i + 1}`);
 
         const data: Uint8Array = core.FS.readFile(outName);
