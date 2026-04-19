@@ -53,7 +53,7 @@ async function getFFmpeg(onProgress?: (pct: number) => void) {
         loaded += value.length;
         if (total > 0) onProgress?.(Math.round((loaded / total) * 100));
       }
-      const blob = new Blob(chunks, { type: mimeType });
+      const blob = new Blob(chunks.map(c => c.buffer as ArrayBuffer), { type: mimeType });
       return URL.createObjectURL(blob);
     };
 
