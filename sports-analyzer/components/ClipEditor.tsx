@@ -4,8 +4,6 @@ import { Scissors, Play, Square, Download, Check, ChevronDown, ChevronUp, Film, 
 import { getEventConfig } from "@/types";
 import type { SportEvent } from "@/types";
 
-// We import the handle type but don't import VideoPlayerHandle from VideoPlayer
-// to avoid circular deps — we use a local compatible interface
 interface PlayerHandle {
   getCurrentTime: () => number;
   seekTo: (time: number) => void;
@@ -22,27 +20,48 @@ function fmt(t: number) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60), ds = Math.floor((t % 1) * 10);
   return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${ds}`;
 }
-
 function duration(start: number, end: number) {
-  const d = Math.max(0, end - start);
-  return `${d.toFixed(1)}s`;
+  return `${Math.max(0, end - start).toFixed(1)}s`;
 }
 
 type FilterState = { tipo: string; subtype: string; result: string };
 
+// ─── FFmpeg loader (runs entirely in-browser, no external CDN) ───────────────
+let ffmpegInstance: unknown = null;
+let ffmpegLoading: Promise<unknown> | null = null;
+
+async function getFFmpeg() {
+  if (ffmpegInstance) return ffmpegInstance;
+  if (ffmpegLoading) return ffmpegLoading;
+
+  ffmpegLoading = (async () => {
+    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+    const { toBlobURL } = await import("@ffmpeg/util");
+    const ff = new FFmpeg();
+    // Files served from /public/ffmpeg — same origin, no CORS
+    await ff.load({
+      coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
+      wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
+    });
+    ffmpegInstance = ff;
+    return ff;
+  })();
+
+  return ffmpegLoading;
+}
+
+// Restore the public/ffmpeg files
 export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEditorProps) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [settingEnd, setSettingEnd] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>({ tipo: "", subtype: "", result: "" });
-
-  // MP4 export state
   const [exportStatus, setExportStatus] = useState<"idle" | "loading-ffmpeg" | "exporting" | "done" | "error">("idle");
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const ffmpegRef = useRef<unknown>(null);
+  const fileBufferRef = useRef<ArrayBuffer | null>(null);
+  const lastFileRef = useRef<File | null>(null);
 
-  // Only events that have at least clip_start defined
   const clips = useMemo(() => {
     let list = events.filter(e => e.clip_start !== undefined);
     if (filter.tipo)    list = list.filter(e => e.tipo === filter.tipo);
@@ -51,8 +70,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
     return list;
   }, [events, filter]);
 
-  const uniqueTipos = useMemo(() =>
-    Array.from(new Set(events.map(e => e.tipo))), [events]);
+  const uniqueTipos = useMemo(() => Array.from(new Set(events.map(e => e.tipo))), [events]);
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {
@@ -63,39 +81,30 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
   };
 
   const toggleAll = () => {
-    if (selected.size === clips.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(clips.map(e => e.id)));
-    }
+    if (selected.size === clips.length) setSelected(new Set());
+    else setSelected(new Set(clips.map(e => e.id)));
   };
 
-  // Preview: seek to clip_start and play
   const handlePreview = useCallback((event: SportEvent) => {
     playerRef.current?.seekTo(event.clip_start ?? Math.max(0, event.time - 5));
   }, [playerRef]);
 
-  // Start setting clip end for an event
   const handleSetEnd = useCallback((eventId: string, event: SportEvent) => {
     if (settingEnd === eventId) {
-      // Confirm: capture current player time as clip_end
       const currentTime = playerRef.current?.getCurrentTime() ?? event.time;
       onUpdateClip(eventId, event.clip_start ?? Math.max(0, event.time - 5), currentTime);
       setSettingEnd(null);
     } else {
-      // First click: seek to clip_start, enter "waiting for end" mode
       playerRef.current?.seekTo(event.clip_start ?? Math.max(0, event.time - 5));
       setSettingEnd(eventId);
     }
   }, [settingEnd, playerRef, onUpdateClip]);
 
-  // Adjust clip_start manually
   const handleSetStart = useCallback((event: SportEvent) => {
     const currentTime = playerRef.current?.getCurrentTime() ?? event.time;
     onUpdateClip(event.id, currentTime, event.clip_end ?? event.time);
   }, [playerRef, onUpdateClip]);
 
-  // Export selected clips as MP4 using native browser APIs (fast, no re-encode)
   const handleExport = useCallback(async () => {
     const clipsToExport = clips
       .filter(e => selected.has(e.id))
@@ -116,7 +125,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
       const exportData = {
         exported_at: new Date().toISOString(),
         total_clips: clipsToExport.length,
-        clips: clipsToExport.map((c) => ({
+        clips: clipsToExport.map(c => ({
           id: c.id, tipo: c.tipo, subtype: c.subtype ?? null,
           result: c.result ?? c.resultado ?? null, player_name: c.player_name ?? null,
           timestamp: c.time, clip_start: c.clip_start, clip_end: c.clip_end,
@@ -128,83 +137,70 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
       };
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `clips_${new Date().toISOString().slice(0,10)}.json`; a.click();
+      const a = document.createElement("a");
+      a.href = url; a.download = `clips_${new Date().toISOString().slice(0,10)}.json`; a.click();
       URL.revokeObjectURL(url);
       return;
     }
 
-    // Local file → ffmpeg.wasm con -c copy (sin re-encode, casi instantáneo)
     try {
       setExportError(null);
 
-      // Step 1: load ffmpeg (only once, cached in ref)
-      if (!ffmpegRef.current) {
+      // Load ffmpeg from /public/ffmpeg (self-hosted, no CORS, cached after first load)
+      if (!ffmpegInstance) {
         setExportStatus("loading-ffmpeg");
-        setExportProgress({ current: 0, total: clipsToExport.length, label: "Descargando FFmpeg (~10MB)..." });
-        const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-        const { toBlobURL } = await import("@ffmpeg/util");
-        const ffmpeg = new FFmpeg();
-        // Use single-threaded core (no SharedArrayBuffer needed, no COOP headers required)
-        const baseURL = "https://unpkg.com/@ffmpeg/core-st@0.12.6/dist/umd";
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-        });
-        ffmpegRef.current = ffmpeg;
+        setExportProgress({ current: 0, total: clipsToExport.length, label: "Cargando FFmpeg (~30MB, solo la primera vez)..." });
       }
 
-      const ffmpeg = ffmpegRef.current as {
-        writeFile: (name: string, data: Uint8Array) => Promise<void>;
-        readFile: (name: string) => Promise<Uint8Array | string>;
-        deleteFile: (name: string) => Promise<void>;
-        exec: (args: string[]) => Promise<number>;
-      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ff = await getFFmpeg() as any;
 
-      // Step 2: write input file once
+      // Read file buffer (cache it if same file)
       setExportStatus("exporting");
-      setExportProgress({ current: 0, total: clipsToExport.length, label: "Cargando video en memoria..." });
-      const inputExt = localFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
-      const inputFileName = `src.${inputExt}`;
-      const fileBuffer = await localFile.arrayBuffer();
-      await ffmpeg.writeFile(inputFileName, new Uint8Array(fileBuffer));
+      if (lastFileRef.current !== localFile || !fileBufferRef.current) {
+        setExportProgress({ current: 0, total: clipsToExport.length, label: "Leyendo video..." });
+        fileBufferRef.current = await localFile.arrayBuffer();
+        lastFileRef.current = localFile;
+        const ext = localFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
+        await ff.writeFile(`src.${ext}`, new Uint8Array(fileBufferRef.current));
+      }
 
-      // Step 3: cut each clip with -c copy (stream copy, no re-encode → fast)
+      const ext = localFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
+      const inputName = `src.${ext}`;
+
       for (let i = 0; i < clipsToExport.length; i++) {
         const clip = clipsToExport[i];
         const safeName = clip.tipo.replace(/[^a-zA-Z0-9]/g, "_");
-        const outputName = `clip_${String(i + 1).padStart(2, "0")}_${safeName}.mp4`;
+        const outName = `clip_${String(i+1).padStart(2,"0")}_${safeName}.mp4`;
         setExportProgress({ current: i + 1, total: clipsToExport.length, label: clip.label });
 
-        await ffmpeg.exec([
+        // -c copy = stream copy, NO re-encode → takes milliseconds per clip
+        await ff.exec([
           "-ss", clip.clip_start.toFixed(3),
           "-to", clip.clip_end.toFixed(3),
-          "-i", inputFileName,
-          "-c", "copy",           // no re-encode: stream copy = instantáneo
+          "-i", inputName,
+          "-c", "copy",
           "-movflags", "+faststart",
           "-avoid_negative_ts", "make_zero",
-          outputName,
+          outName,
         ]);
 
-        const data = await ffmpeg.readFile(outputName);
-        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data as string);
-        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "video/mp4" });
-        const url = URL.createObjectURL(blob);
+        const data: Uint8Array | string = await ff.readFile(outName);
+        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+        const dlBlob = new Blob([bytes.buffer as ArrayBuffer], { type: "video/mp4" });
+        const url = URL.createObjectURL(dlBlob);
         const a = document.createElement("a");
-        a.href = url;
-        a.download = outputName;
-        a.click();
+        a.href = url; a.download = outName; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-        await ffmpeg.deleteFile(outputName);
+        await ff.deleteFile(outName);
       }
 
-      // Keep input cached (don't delete) so re-exports are faster
       setExportStatus("done");
       setTimeout(() => setExportStatus("idle"), 4000);
     } catch (err: unknown) {
       console.error(err);
       setExportStatus("error");
-      setExportError(err instanceof Error ? err.message : "Error desconocido al exportar");
+      setExportError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
       setExportProgress(null);
     }
@@ -235,7 +231,6 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
       {open && (
         <div className="px-4 pb-4 flex flex-col gap-3">
 
-          {/* How it works */}
           {settingEnd && (
             <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl animate-slide-in">
               <span className="text-amber-400 text-lg">⏱</span>
@@ -286,28 +281,20 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
               <button onClick={handleExport}
                 disabled={exportStatus === "loading-ffmpeg" || exportStatus === "exporting"}
                 className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg font-display font-bold tracking-widest text-xs transition-all
-                  ${exportStatus === "done"
-                    ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
-                    : exportStatus === "error"
-                    ? "bg-rose-500/15 border-rose-500/40 text-rose-400"
-                    : exportStatus === "loading-ffmpeg" || exportStatus === "exporting"
-                    ? "bg-violet-500/10 border-violet-500/30 text-violet-300 cursor-wait opacity-75"
-                    : "bg-violet-500/15 border-violet-500/40 hover:bg-violet-500/25 text-violet-400"
-                  }`}>
+                  ${exportStatus === "done" ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
+                  : exportStatus === "error" ? "bg-rose-500/15 border-rose-500/40 text-rose-400"
+                  : exportStatus !== "idle" ? "bg-violet-500/10 border-violet-500/30 text-violet-300 cursor-wait opacity-75"
+                  : "bg-violet-500/15 border-violet-500/40 hover:bg-violet-500/25 text-violet-400"}`}>
                 {exportStatus === "loading-ffmpeg" || exportStatus === "exporting"
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  : exportStatus === "done"
-                  ? <CheckCircle2 className="w-3.5 h-3.5" />
-                  : exportStatus === "error"
-                  ? <AlertCircle className="w-3.5 h-3.5" />
-                  : <Download className="w-3.5 h-3.5" />
-                }
+                  : exportStatus === "done" ? <CheckCircle2 className="w-3.5 h-3.5" />
+                  : exportStatus === "error" ? <AlertCircle className="w-3.5 h-3.5" />
+                  : <Download className="w-3.5 h-3.5" />}
                 {exportStatus === "loading-ffmpeg" ? "CARGANDO FFMPEG..."
                   : exportStatus === "exporting" ? `CORTANDO ${exportProgress?.current ?? 0}/${exportProgress?.total ?? 0}...`
                   : exportStatus === "done" ? "¡LISTO!"
                   : exportStatus === "error" ? "ERROR"
-                  : `EXPORTAR ${selected.size} MP4${selected.size > 1 ? "s" : ""}`
-                }
+                  : `EXPORTAR ${selected.size} MP4${selected.size > 1 ? "s" : ""}`}
               </button>
             )}
           </div>
@@ -325,25 +312,18 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                 const end   = event.clip_end   ?? event.time;
                 const isEditingEnd = settingEnd === event.id;
                 const result = event.result ?? event.resultado ?? null;
-
                 return (
                   <div key={event.id}
                     className={`flex flex-col gap-2 p-3 rounded-xl border transition-all ${isEditingEnd ? "border-amber-500/50 bg-amber-500/5" : "border-[#21262d] bg-[#161b22] hover:border-[#30363d]"}`}>
-
-                    {/* Row 1: checkbox + info */}
                     <div className="flex items-center gap-2">
                       <button onClick={() => toggleSelect(event.id)}
                         className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${selected.has(event.id) ? "bg-violet-500 border-violet-500" : "border-[#30363d]"}`}>
                         {selected.has(event.id) && <Check className="w-2.5 h-2.5 text-white" />}
                       </button>
-
                       <span style={{fontSize:"1rem"}}>{cfg.emoji}</span>
-
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`font-display font-bold text-xs ${cfg.color}`}>
-                            {event.tipo.toUpperCase()}
-                          </span>
+                          <span className={`font-display font-bold text-xs ${cfg.color}`}>{event.tipo.toUpperCase()}</span>
                           {event.subtype && (
                             <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${event.subtype === "ofensivo" ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-sky-500/10 border-sky-500/20 text-sky-400"}`}>
                               {event.subtype === "ofensivo" ? "⚔️ OF" : "🛡️ DEF"}
@@ -354,19 +334,11 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                               {result === "correcto" ? "✓ OK" : "✗ ERR"}
                             </span>
                           )}
-                          {event.player_name && (
-                            <span className="text-xs font-mono text-cyan-400">👤 {event.player_name}</span>
-                          )}
+                          {event.player_name && <span className="text-xs font-mono text-cyan-400">👤 {event.player_name}</span>}
                         </div>
                       </div>
-
-                      {/* Duration badge */}
-                      <span className="text-xs font-mono text-[#484f58] bg-[#21262d] px-2 py-0.5 rounded shrink-0">
-                        {duration(start, end)}
-                      </span>
+                      <span className="text-xs font-mono text-[#484f58] bg-[#21262d] px-2 py-0.5 rounded shrink-0">{duration(start, end)}</span>
                     </div>
-
-                    {/* Row 2: timeline bar */}
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs text-emerald-400 tabular-nums w-14 shrink-0">{fmt(start)}</span>
                       <div className="flex-1 h-1.5 bg-[#21262d] rounded-full overflow-hidden">
@@ -374,23 +346,15 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                       </div>
                       <span className="font-mono text-xs text-rose-400 tabular-nums w-14 text-right shrink-0">{fmt(end)}</span>
                     </div>
-
-                    {/* Row 3: actions */}
                     <div className="flex gap-1.5 flex-wrap">
-                      {/* Preview */}
                       <button onClick={() => handlePreview(event)}
                         className="flex items-center gap-1 px-2.5 py-1 bg-[#21262d] border border-[#30363d] hover:border-[#484f58] rounded-lg text-[#8b949e] hover:text-white font-mono text-xs transition-all">
                         <Play className="w-3 h-3" /> Preview
                       </button>
-
-                      {/* Set start to current */}
                       <button onClick={() => handleSetStart(event)}
-                        className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 rounded-lg text-emerald-400 font-mono text-xs transition-all"
-                        title="Establece el inicio del clip en el tiempo actual del video">
+                        className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 rounded-lg text-emerald-400 font-mono text-xs transition-all">
                         ← INICIO AQUÍ
                       </button>
-
-                      {/* Set end */}
                       {isEditingEnd ? (
                         <button onClick={() => handleSetEnd(event.id, event)}
                           className="flex items-center gap-1 px-2.5 py-1 bg-amber-500/15 border border-amber-500/50 rounded-lg text-amber-400 font-mono text-xs animate-pulse transition-all">
@@ -398,8 +362,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                         </button>
                       ) : (
                         <button onClick={() => handleSetEnd(event.id, event)}
-                          className="flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg text-rose-400 font-mono text-xs transition-all"
-                          title="Hace preview → reproducí hasta donde querés → confirmar fin">
+                          className="flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg text-rose-400 font-mono text-xs transition-all">
                           FIN AQUÍ →
                         </button>
                       )}
@@ -410,7 +373,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
             </div>
           )}
 
-          {/* Export status / info */}
+          {/* Status */}
           {exportStatus === "error" && exportError && (
             <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -429,10 +392,8 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
               </div>
               {exportStatus === "exporting" && exportProgress.total > 0 && (
                 <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-violet-500 rounded-full transition-all duration-500"
-                    style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }}
-                  />
+                  <div className="h-full bg-violet-500 rounded-full transition-all duration-500"
+                    style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }} />
                 </div>
               )}
             </div>
@@ -445,7 +406,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                   <p className="text-[#484f58] font-mono text-xs mb-1 uppercase tracking-widest">Exportación MP4 — sin re-encode:</p>
                   <p className="text-[#8b949e] font-mono text-xs leading-relaxed">
                     · Usa ffmpeg con <span className="text-violet-400">-c copy</span>: corte instantáneo, calidad original<br/>
-                    · Primera vez descarga FFmpeg (~10MB), después queda cacheado<br/>
+                    · Primera vez descarga FFmpeg (~30MB desde el servidor), después queda cacheado<br/>
                     · Cada clip se descarga como <span className="text-violet-400">.mp4</span> individual
                   </p>
                 </>
