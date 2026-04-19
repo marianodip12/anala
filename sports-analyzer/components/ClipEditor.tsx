@@ -65,9 +65,7 @@ async function getFFmpegCore(onProgress?: (pct: number) => void) {
       if (jsTotal > 0) onProgress?.(Math.round((jsLoaded / jsTotal) * 15)); // 0-15%
     }
     const jsText = new TextDecoder().decode(
-      new Uint8Array(jsChunks.reduce((acc, c) => acc + c.length, 0)).map
-        ? (() => { const out = new Uint8Array(jsLoaded); let off = 0; for (const c of jsChunks) { out.set(c, off); off += c.length; } return out; })()
-        : new Uint8Array(0)
+      (() => { const out = new Uint8Array(jsLoaded); let off = 0; for (const c of jsChunks) { out.set(c, off); off += c.length; } return out; })()
     );
 
     // Download ffmpeg-core.wasm with progress tracking
