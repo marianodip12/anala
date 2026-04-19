@@ -26,48 +26,111 @@ function duration(start: number, end: number) {
 
 type FilterState = { tipo: string; subtype: string; result: string };
 
-// ─── FFmpeg loader (runs entirely in-browser, no external CDN) ───────────────
-let ffmpegInstance: unknown = null;
-let ffmpegLoading: Promise<unknown> | null = null;
+// ─── FFmpeg Core — runs directly in main thread, no Worker, no SharedArrayBuffer ──
+// Uses @ffmpeg/core directly (createFFmpegCore) instead of the Worker-based @ffmpeg/ffmpeg wrapper
+let coreInstance: unknown = null;
+let coreLoading: Promise<unknown> | null = null;
 
-async function getFFmpeg(onProgress?: (pct: number) => void) {
-  if (ffmpegInstance) return ffmpegInstance;
-  if (ffmpegLoading) return ffmpegLoading;
+declare global {
+  interface Window {
+    createFFmpegCore?: (config: Record<string, unknown>) => Promise<{
+      FS: {
+        writeFile: (path: string, data: Uint8Array) => void;
+        readFile: (path: string) => Uint8Array;
+        unlink: (path: string) => void;
+      };
+      ccall: (name: string, returnType: string, argTypes: string[], args: unknown[]) => number;
+    }>;
+  }
+}
 
-  ffmpegLoading = (async () => {
-    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const ff = new FFmpeg();
+async function getFFmpegCore(onProgress?: (pct: number) => void) {
+  if (coreInstance) return coreInstance;
+  if (coreLoading) return coreLoading;
 
-    // Download with real progress tracking
-    const downloadWithProgress = async (url: string, mimeType: string): Promise<string> => {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status} al cargar ${url}`);
-      const total = Number(res.headers.get("content-length") ?? 0);
-      const reader = res.body!.getReader();
-      const chunks: Uint8Array[] = [];
-      let loaded = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        loaded += value.length;
-        if (total > 0) onProgress?.(Math.round((loaded / total) * 100));
-      }
-      const blob = new Blob(chunks.map(c => c.buffer as ArrayBuffer), { type: mimeType });
-      return URL.createObjectURL(blob);
-    };
+  coreLoading = (async () => {
+    // Download ffmpeg-core.js with progress tracking
+    onProgress?.(0);
+    const jsRes = await fetch("/ffmpeg/ffmpeg-core.js");
+    if (!jsRes.ok) throw new Error(`No se pudo cargar ffmpeg-core.js (${jsRes.status})`);
+    const jsTotal = Number(jsRes.headers.get("content-length") ?? 0);
+    const jsReader = jsRes.body!.getReader();
+    const jsChunks: Uint8Array[] = [];
+    let jsLoaded = 0;
+    while (true) {
+      const { done, value } = await jsReader.read();
+      if (done) break;
+      jsChunks.push(value);
+      jsLoaded += value.length;
+      if (jsTotal > 0) onProgress?.(Math.round((jsLoaded / jsTotal) * 15)); // 0-15%
+    }
+    const jsText = new TextDecoder().decode(
+      new Uint8Array(jsChunks.reduce((acc, c) => acc + c.length, 0)).map
+        ? (() => { const out = new Uint8Array(jsLoaded); let off = 0; for (const c of jsChunks) { out.set(c, off); off += c.length; } return out; })()
+        : new Uint8Array(0)
+    );
 
-    const coreURL = await downloadWithProgress("/ffmpeg/ffmpeg-core.js", "text/javascript");
+    // Download ffmpeg-core.wasm with progress tracking
+    const wasmRes = await fetch("/ffmpeg/ffmpeg-core.wasm");
+    if (!wasmRes.ok) throw new Error(`No se pudo cargar ffmpeg-core.wasm (${wasmRes.status})`);
+    const wasmTotal = Number(wasmRes.headers.get("content-length") ?? 0);
+    const wasmReader = wasmRes.body!.getReader();
+    const wasmChunks: Uint8Array[] = [];
+    let wasmLoaded = 0;
+    while (true) {
+      const { done, value } = await wasmReader.read();
+      if (done) break;
+      wasmChunks.push(value);
+      wasmLoaded += value.length;
+      if (wasmTotal > 0) onProgress?.(15 + Math.round((wasmLoaded / wasmTotal) * 75)); // 15-90%
+    }
+    const wasmBuffer = new Uint8Array(wasmLoaded);
+    let wasmOff = 0;
+    for (const c of wasmChunks) { wasmBuffer.set(c, wasmOff); wasmOff += c.length; }
+
+    onProgress?.(90);
+
+    // Inject and instantiate core directly (no Worker needed)
+    const scriptBlob = new Blob([jsText], { type: "text/javascript" });
+    const scriptURL = URL.createObjectURL(scriptBlob);
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = scriptURL;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Error inyectando ffmpeg-core.js"));
+      document.head.appendChild(script);
+    });
+    URL.revokeObjectURL(scriptURL);
+
+    onProgress?.(95);
+
+    if (!window.createFFmpegCore) throw new Error("createFFmpegCore no disponible tras cargar el script");
+
+    const core = await window.createFFmpegCore({
+      wasmBinary: wasmBuffer.buffer as ArrayBuffer,
+      locateFile: () => "",
+    });
+
     onProgress?.(100);
-    const wasmURL = await downloadWithProgress("/ffmpeg/ffmpeg-core.wasm", "application/wasm");
-    onProgress?.(100);
-
-    await ff.load({ coreURL, wasmURL });
-    ffmpegInstance = ff;
-    return ff;
+    coreInstance = core;
+    return core;
   })();
 
-  return ffmpegLoading;
+  return coreLoading;
+}
+
+// Run ffmpeg command using core directly
+async function runFFmpeg(
+  core: Awaited<ReturnType<NonNullable<Window["createFFmpegCore"]>>>,
+  args: string[]
+): Promise<void> {
+  const ret = core.ccall(
+    "ffmpeg_exec",
+    "number",
+    ["number", "string"],
+    [args.length, args.join("\n")]
+  );
+  if (ret !== 0) throw new Error(`ffmpeg salió con código ${ret}`);
 }
 
 // Restore the public/ffmpeg files
@@ -167,28 +230,25 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
     try {
       setExportError(null);
 
-      if (!ffmpegInstance) {
+      if (!coreInstance) {
         setExportStatus("loading-ffmpeg");
         setWasmPct(0);
         setExportProgress({ current: 0, total: clipsToExport.length, label: "Descargando FFmpeg..." });
       }
 
-      const ff = await getFFmpeg((pct) => {
-        setWasmPct(pct);
-      }) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const core = await getFFmpegCore((pct) => setWasmPct(pct)) as any;
 
-      // Read file buffer (cache it if same file)
       setExportStatus("exporting");
       if (lastFileRef.current !== localFile || !fileBufferRef.current) {
         setExportProgress({ current: 0, total: clipsToExport.length, label: "Leyendo video..." });
         fileBufferRef.current = await localFile.arrayBuffer();
         lastFileRef.current = localFile;
-        const ext = localFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
-        await ff.writeFile(`src.${ext}`, new Uint8Array(fileBufferRef.current));
       }
 
       const ext = localFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
       const inputName = `src.${ext}`;
+      core.FS.writeFile(inputName, new Uint8Array(fileBufferRef.current!));
 
       for (let i = 0; i < clipsToExport.length; i++) {
         const clip = clipsToExport[i];
@@ -196,39 +256,29 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
         const outName = `clip_${String(i+1).padStart(2,"0")}_${safeName}.mp4`;
         setExportProgress({ current: i + 1, total: clipsToExport.length, label: clip.label });
 
-        // -c copy para mp4/m4v, re-encode mínimo para mov (necesita remux)
         const needsRemux = ["mov", "avi", "mkv"].includes(ext);
-        const args = needsRemux
-          ? [
-              "-ss", clip.clip_start.toFixed(3),
-              "-to", clip.clip_end.toFixed(3),
-              "-i", inputName,
-              "-c:v", "copy",          // copia stream de video sin re-encode
-              "-c:a", "aac",           // re-encode solo audio (mov usa pcm que mp4 no soporta)
-              "-movflags", "+faststart",
-              "-avoid_negative_ts", "make_zero",
-              outName,
-            ]
-          : [
-              "-ss", clip.clip_start.toFixed(3),
-              "-to", clip.clip_end.toFixed(3),
-              "-i", inputName,
-              "-c", "copy",
-              "-movflags", "+faststart",
-              "-avoid_negative_ts", "make_zero",
-              outName,
-            ];
+        const args = [
+          "-ss", clip.clip_start.toFixed(3),
+          "-to", clip.clip_end.toFixed(3),
+          "-i", inputName,
+          ...(needsRemux ? ["-c:v", "copy", "-c:a", "aac"] : ["-c", "copy"]),
+          "-movflags", "+faststart",
+          "-avoid_negative_ts", "make_zero",
+          outName,
+        ];
 
-        await ff.exec(args);
+        // Run in main thread — no Worker, no SharedArrayBuffer
+        const ret = core.ccall("ffmpeg_exec", "number", ["number", "string"],
+          [args.length, args.join("\0")]);
+        if (ret !== 0) throw new Error(`FFmpeg error (código ${ret}) en clip ${i + 1}`);
 
-        const data: Uint8Array | string = await ff.readFile(outName);
-        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
-        const dlBlob = new Blob([bytes.buffer as ArrayBuffer], { type: "video/mp4" });
+        const data: Uint8Array = core.FS.readFile(outName);
+        const dlBlob = new Blob([data.buffer as ArrayBuffer], { type: "video/mp4" });
         const url = URL.createObjectURL(dlBlob);
         const a = document.createElement("a");
         a.href = url; a.download = outName; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-        await ff.deleteFile(outName);
+        core.FS.unlink(outName);
       }
 
       setExportStatus("done");
