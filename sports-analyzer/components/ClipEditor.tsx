@@ -30,21 +30,39 @@ type FilterState = { tipo: string; subtype: string; result: string };
 let ffmpegInstance: unknown = null;
 let ffmpegLoading: Promise<unknown> | null = null;
 
-async function getFFmpeg() {
+async function getFFmpeg(onProgress?: (pct: number) => void) {
   if (ffmpegInstance) return ffmpegInstance;
   if (ffmpegLoading) return ffmpegLoading;
 
   ffmpegLoading = (async () => {
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { toBlobURL } = await import("@ffmpeg/util");
     const ff = new FFmpeg();
-    // Files are copied from node_modules/@ffmpeg/core to /public/ffmpeg/ 
-    // by scripts/copy-ffmpeg.js at build time (postinstall + build step)
-    // This ensures they're always available on the same origin — no CORS issues
-    await ff.load({
-      coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
-      wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
-    });
+
+    // Download with real progress tracking
+    const downloadWithProgress = async (url: string, mimeType: string): Promise<string> => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} al cargar ${url}`);
+      const total = Number(res.headers.get("content-length") ?? 0);
+      const reader = res.body!.getReader();
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        if (total > 0) onProgress?.(Math.round((loaded / total) * 100));
+      }
+      const blob = new Blob(chunks, { type: mimeType });
+      return URL.createObjectURL(blob);
+    };
+
+    const coreURL = await downloadWithProgress("/ffmpeg/ffmpeg-core.js", "text/javascript");
+    onProgress?.(100);
+    const wasmURL = await downloadWithProgress("/ffmpeg/ffmpeg-core.wasm", "application/wasm");
+    onProgress?.(100);
+
+    await ff.load({ coreURL, wasmURL });
     ffmpegInstance = ff;
     return ff;
   })();
@@ -61,6 +79,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
   const [exportStatus, setExportStatus] = useState<"idle" | "loading-ffmpeg" | "exporting" | "done" | "error">("idle");
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [wasmPct, setWasmPct] = useState(0);
   const fileBufferRef = useRef<ArrayBuffer | null>(null);
   const lastFileRef = useRef<File | null>(null);
 
@@ -148,14 +167,15 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
     try {
       setExportError(null);
 
-      // Load ffmpeg from /public/ffmpeg (self-hosted, no CORS, cached after first load)
       if (!ffmpegInstance) {
         setExportStatus("loading-ffmpeg");
-        setExportProgress({ current: 0, total: clipsToExport.length, label: "Cargando FFmpeg (~30MB, solo la primera vez)..." });
+        setWasmPct(0);
+        setExportProgress({ current: 0, total: clipsToExport.length, label: "Descargando FFmpeg..." });
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ff = await getFFmpeg() as any;
+      const ff = await getFFmpeg((pct) => {
+        setWasmPct(pct);
+      }) as any;
 
       // Read file buffer (cache it if same file)
       setExportStatus("exporting");
@@ -402,15 +422,33 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
 
           {(exportStatus === "loading-ffmpeg" || exportStatus === "exporting") && exportProgress && (
             <div className="p-3 bg-violet-500/10 border border-violet-500/30 rounded-xl">
-              <div className="flex items-center gap-2 mb-2">
-                <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin" />
-                <p className="text-violet-400 font-mono text-xs truncate">{exportProgress.label}</p>
-              </div>
-              {exportStatus === "exporting" && exportProgress.total > 0 && (
-                <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
-                  <div className="h-full bg-violet-500 rounded-full transition-all duration-500"
-                    style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }} />
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />
+                  <p className="text-violet-400 font-mono text-xs truncate">
+                    {exportStatus === "loading-ffmpeg"
+                      ? `Descargando FFmpeg... ${wasmPct}%`
+                      : exportProgress.label}
+                  </p>
                 </div>
+                {exportStatus === "loading-ffmpeg" && (
+                  <span className="text-violet-300 font-mono text-xs shrink-0">{wasmPct}%</span>
+                )}
+              </div>
+              <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-violet-500 rounded-full transition-all duration-200"
+                  style={{
+                    width: exportStatus === "loading-ffmpeg"
+                      ? `${wasmPct}%`
+                      : `${(exportProgress.current / exportProgress.total) * 100}%`
+                  }}
+                />
+              </div>
+              {exportStatus === "loading-ffmpeg" && (
+                <p className="text-[#484f58] font-mono text-xs mt-1.5">
+                  Solo se descarga una vez · queda cacheado en el browser
+                </p>
               )}
             </div>
           )}
