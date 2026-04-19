@@ -193,7 +193,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
         ]);
 
         const data = await ffmpeg.readFile(outputName);
-        const blob = new Blob([data], { type: "video/mp4" });
+        const blob = new Blob([data instanceof Uint8Array ? data.buffer as ArrayBuffer : data], { type: "video/mp4" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
