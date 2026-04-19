@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useCallback, useMemo, useRef } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { Scissors, Play, Square, Download, Check, ChevronDown, ChevronUp, Film, Filter, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { getEventConfig } from "@/types";
 import type { SportEvent } from "@/types";
@@ -37,10 +37,9 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
   const [filter, setFilter] = useState<FilterState>({ tipo: "", subtype: "", result: "" });
   
   // MP4 export state
-  const [exportStatus, setExportStatus] = useState<"idle" | "loading-ffmpeg" | "exporting" | "done" | "error">("idle");
+  const [exportStatus, setExportStatus] = useState<"idle" | "exporting" | "done" | "error">("idle");
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const ffmpegRef = useRef<unknown>(null);
 
   // Only events that have at least clip_start defined
   const clips = useMemo(() => {
@@ -95,7 +94,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
     onUpdateClip(event.id, currentTime, event.clip_end ?? event.time);
   }, [playerRef, onUpdateClip]);
 
-  // Export selected clips as MP4 using ffmpeg.wasm
+  // Export selected clips as MP4 using native browser APIs (fast, no re-encode)
   const handleExport = useCallback(async () => {
     const clipsToExport = clips
       .filter(e => selected.has(e.id))
@@ -111,99 +110,110 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
 
     const localFile = (playerRef.current as { getLocalFile?: () => File | null })?.getLocalFile?.();
 
-    // If no local file: export JSON with ffmpeg commands
+    // No local file → export JSON with ffmpeg commands
     if (!localFile) {
       const exportData = {
         exported_at: new Date().toISOString(),
         total_clips: clipsToExport.length,
-        clips: clipsToExport.map((c, i) => ({
-          id: c.id,
-          tipo: c.tipo,
-          subtype: c.subtype ?? null,
-          result: c.result ?? c.resultado ?? null,
-          player_name: c.player_name ?? null,
-          timestamp: c.time,
-          clip_start: c.clip_start,
-          clip_end: c.clip_end,
-          duration_seconds: Math.max(0, c.clip_end - c.clip_start),
-          label: c.label,
+        clips: clipsToExport.map((c) => ({
+          id: c.id, tipo: c.tipo, subtype: c.subtype ?? null,
+          result: c.result ?? c.resultado ?? null, player_name: c.player_name ?? null,
+          timestamp: c.time, clip_start: c.clip_start, clip_end: c.clip_end,
+          duration_seconds: Math.max(0, c.clip_end - c.clip_start), label: c.label,
         })),
         ffmpeg_commands: clipsToExport.map((c, i) =>
-          `ffmpeg -i INPUT.mp4 -ss ${c.clip_start.toFixed(2)} -to ${c.clip_end.toFixed(2)} -c copy clip_${String(i+1).padStart(2,"0")}_${c.tipo.replace(/\s+/g,"_")}.mp4`
+          `ffmpeg -i INPUT.mp4 -ss ${c.clip_start.toFixed(2)} -to ${c.clip_end.toFixed(2)} -c copy clip_${String(i+1).padStart(2,"00")}_${c.tipo.replace(/\s+/g,"_")}.mp4`
         ),
       };
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `clips_${new Date().toISOString().slice(0,10)}.json`;
-      a.click();
+      const a = document.createElement("a"); a.href = url;
+      a.download = `clips_${new Date().toISOString().slice(0,10)}.json`; a.click();
       URL.revokeObjectURL(url);
       return;
     }
 
-    // Local file available — export real MP4 clips using ffmpeg.wasm
-    try {
-      setExportStatus("loading-ffmpeg");
-      setExportError(null);
-      setExportProgress({ current: 0, total: clipsToExport.length, label: "Cargando FFmpeg..." });
+    // Local file available → capture via MediaRecorder (no re-encode, native speed)
+    const recordClip = (file: File, startSec: number, endSec: number): Promise<Blob> => {
+      return new Promise((resolve, reject) => {
+        const video = document.createElement("video");
+        video.src = URL.createObjectURL(file);
+        video.muted = false;
+        video.style.display = "none";
+        document.body.appendChild(video);
 
-      // Dynamically import ffmpeg.wasm
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
+        // Pick best supported format
+        const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(
+          m => MediaRecorder.isTypeSupported(m)
+        ) ?? "video/webm";
 
-      if (!ffmpegRef.current) {
-        const ffmpeg = new FFmpeg();
-        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+        video.addEventListener("loadedmetadata", () => {
+          video.currentTime = startSec;
         });
-        ffmpegRef.current = ffmpeg;
-      }
 
-      const ffmpeg = ffmpegRef.current as {
-        writeFile: (name: string, data: Uint8Array) => Promise<void>;
-        readFile: (name: string) => Promise<Uint8Array>;
-        deleteFile: (name: string) => Promise<void>;
-        exec: (args: string[]) => Promise<number>;
-      };
+        video.addEventListener("seeked", () => {
+          const stream = (video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureStream?: () => MediaStream }).captureStream?.() ??
+                         (video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureStream?: () => MediaStream }).mozCaptureStream?.();
+          if (!stream) { reject(new Error("captureStream no soportado en este browser")); return; }
 
+          const recorder = new MediaRecorder(stream, { mimeType });
+          const chunks: Blob[] = [];
+
+          recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+          recorder.onstop = () => {
+            URL.revokeObjectURL(video.src);
+            document.body.removeChild(video);
+            resolve(new Blob(chunks, { type: mimeType }));
+          };
+
+          recorder.start();
+          video.play().catch(reject);
+
+          const checkTime = setInterval(() => {
+            if (video.currentTime >= endSec) {
+              clearInterval(checkTime);
+              recorder.stop();
+              video.pause();
+            }
+          }, 50);
+
+          // Safety timeout
+          const safety = setTimeout(() => {
+            clearInterval(checkTime);
+            if (recorder.state === "recording") recorder.stop();
+          }, (endSec - startSec + 2) * 1000);
+
+          recorder.onstop = () => {
+            clearTimeout(safety);
+            URL.revokeObjectURL(video.src);
+            document.body.removeChild(video);
+            resolve(new Blob(chunks, { type: mimeType }));
+          };
+        }, { once: true });
+
+        video.onerror = () => reject(new Error("Error cargando el video"));
+      });
+    };
+
+    try {
       setExportStatus("exporting");
-      const inputName = "input_video";
-      const ext = localFile.name.split(".").pop() ?? "mp4";
-      const inputFileName = `${inputName}.${ext}`;
+      setExportError(null);
 
-      setExportProgress({ current: 0, total: clipsToExport.length, label: "Cargando video..." });
-      await ffmpeg.writeFile(inputFileName, await fetchFile(localFile));
+      const ext = MediaRecorder.isTypeSupported("video/webm") ? "webm" : "mp4";
 
       for (let i = 0; i < clipsToExport.length; i++) {
         const clip = clipsToExport[i];
-        const outputName = `clip_${String(i+1).padStart(2,"0")}_${clip.tipo.replace(/\s+/g,"_")}.mp4`;
-        setExportProgress({ current: i + 1, total: clipsToExport.length, label: `Exportando: ${clip.label}` });
+        setExportProgress({ current: i + 1, total: clipsToExport.length, label: clip.label });
 
-        await ffmpeg.exec([
-          "-i", inputFileName,
-          "-ss", clip.clip_start.toFixed(3),
-          "-to", clip.clip_end.toFixed(3),
-          "-c:v", "libx264",
-          "-c:a", "aac",
-          "-preset", "ultrafast",
-          outputName,
-        ]);
-
-        const data = await ffmpeg.readFile(outputName);
-        const blob = new Blob([data instanceof Uint8Array ? data.buffer as ArrayBuffer : data], { type: "video/mp4" });
+        const blob = await recordClip(localFile, clip.clip_start, clip.clip_end);
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = outputName;
+        a.download = `clip_${String(i+1).padStart(2,"0")}_${clip.tipo.replace(/\s+/g,"_")}.${ext}`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
-        await ffmpeg.deleteFile(outputName);
       }
 
-      await ffmpeg.deleteFile(inputFileName);
       setExportStatus("done");
       setTimeout(() => setExportStatus("idle"), 4000);
     } catch (err: unknown) {
@@ -289,17 +299,17 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
 
             {selected.size > 0 && (
               <button onClick={handleExport}
-                disabled={exportStatus === "loading-ffmpeg" || exportStatus === "exporting"}
+                disabled={exportStatus === "exporting"}
                 className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg font-display font-bold tracking-widest text-xs transition-all
                   ${exportStatus === "done"
                     ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
                     : exportStatus === "error"
                     ? "bg-rose-500/15 border-rose-500/40 text-rose-400"
-                    : exportStatus !== "idle"
+                    : exportStatus === "exporting"
                     ? "bg-violet-500/10 border-violet-500/30 text-violet-300 cursor-wait opacity-75"
                     : "bg-violet-500/15 border-violet-500/40 hover:bg-violet-500/25 text-violet-400"
                   }`}>
-                {exportStatus === "loading-ffmpeg" || exportStatus === "exporting"
+                {exportStatus === "exporting"
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   : exportStatus === "done"
                   ? <CheckCircle2 className="w-3.5 h-3.5" />
@@ -307,8 +317,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                   ? <AlertCircle className="w-3.5 h-3.5" />
                   : <Download className="w-3.5 h-3.5" />
                 }
-                {exportStatus === "loading-ffmpeg" ? "CARGANDO FFMPEG..."
-                  : exportStatus === "exporting" ? `EXPORTANDO ${exportProgress?.current ?? 0}/${exportProgress?.total ?? 0}...`
+                {exportStatus === "exporting" ? `EXPORTANDO ${exportProgress?.current ?? 0}/${exportProgress?.total ?? 0}...`
                   : exportStatus === "done" ? "¡LISTO!"
                   : exportStatus === "error" ? "ERROR"
                   : `EXPORTAR ${selected.size} MP4${selected.size > 1 ? "s" : ""}`
@@ -426,14 +435,13 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
             </div>
           )}
 
-          {(exportStatus === "loading-ffmpeg" || exportStatus === "exporting") && exportProgress && (
+          {exportStatus === "exporting" && exportProgress && (
             <div className="p-3 bg-violet-500/10 border border-violet-500/30 rounded-xl">
               <div className="flex items-center gap-2 mb-2">
                 <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin" />
                 <p className="text-violet-400 font-mono text-xs truncate">{exportProgress.label}</p>
               </div>
-              {exportStatus === "exporting" && (
-                <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
+              {exportStatus === "exporting" && (                <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
                   <div
                     className="h-full bg-violet-500 rounded-full transition-all duration-500"
                     style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }}
