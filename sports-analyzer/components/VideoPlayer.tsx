@@ -10,6 +10,7 @@ export interface VideoPlayerHandle {
   getCurrentTime: () => number;
   seekTo: (time: number) => void;
   getMode: () => VideoMode;
+  getLocalFile: () => File | null;
 }
 
 interface VideoPlayerProps {
@@ -97,6 +98,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const localSrcRef = useRef<string | null>(null);  // track blob for revoke
+    const localFileRef = useRef<File | null>(null);   // original File for export
 
     // ── Expose handle ────────────────────────────────────────────────────────
     useImperativeHandle(ref, () => ({
@@ -119,6 +121,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         }
       },
       getMode: () => mode,
+      getLocalFile: () => localFileRef.current,
     }));
 
     // ── Time polling ─────────────────────────────────────────────────────────
@@ -192,6 +195,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       if (localSrcRef.current) URL.revokeObjectURL(localSrcRef.current);
       const url = URL.createObjectURL(file);
       localSrcRef.current = url;
+      localFileRef.current = file;
       setLocalSrc(url);
       setLocalName(file.name);
       setMode("local");
