@@ -38,7 +38,9 @@ async function getFFmpeg() {
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
     const { toBlobURL } = await import("@ffmpeg/util");
     const ff = new FFmpeg();
-    // Files served from /public/ffmpeg — same origin, no CORS
+    // Files are copied from node_modules/@ffmpeg/core to /public/ffmpeg/ 
+    // by scripts/copy-ffmpeg.js at build time (postinstall + build step)
+    // This ensures they're always available on the same origin — no CORS issues
     await ff.load({
       coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
       wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
@@ -174,16 +176,30 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
         const outName = `clip_${String(i+1).padStart(2,"0")}_${safeName}.mp4`;
         setExportProgress({ current: i + 1, total: clipsToExport.length, label: clip.label });
 
-        // -c copy = stream copy, NO re-encode → takes milliseconds per clip
-        await ff.exec([
-          "-ss", clip.clip_start.toFixed(3),
-          "-to", clip.clip_end.toFixed(3),
-          "-i", inputName,
-          "-c", "copy",
-          "-movflags", "+faststart",
-          "-avoid_negative_ts", "make_zero",
-          outName,
-        ]);
+        // -c copy para mp4/m4v, re-encode mínimo para mov (necesita remux)
+        const needsRemux = ["mov", "avi", "mkv"].includes(ext);
+        const args = needsRemux
+          ? [
+              "-ss", clip.clip_start.toFixed(3),
+              "-to", clip.clip_end.toFixed(3),
+              "-i", inputName,
+              "-c:v", "copy",          // copia stream de video sin re-encode
+              "-c:a", "aac",           // re-encode solo audio (mov usa pcm que mp4 no soporta)
+              "-movflags", "+faststart",
+              "-avoid_negative_ts", "make_zero",
+              outName,
+            ]
+          : [
+              "-ss", clip.clip_start.toFixed(3),
+              "-to", clip.clip_end.toFixed(3),
+              "-i", inputName,
+              "-c", "copy",
+              "-movflags", "+faststart",
+              "-avoid_negative_ts", "make_zero",
+              outName,
+            ];
+
+        await ff.exec(args);
 
         const data: Uint8Array | string = await ff.readFile(outName);
         const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
