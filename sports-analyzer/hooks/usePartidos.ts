@@ -11,7 +11,7 @@ const STORAGE_KEY = "sporttag-partidos-v3";
 
 function migratePartido(raw: Record<string, unknown>): Partido {
   const p = raw as Partial<Partido>;
-  const base: Partido = {
+  return {
     id: p.id ?? uuidv4(),
     nombre: p.nombre ?? "",
     equipoLocal: p.equipoLocal ?? "",
@@ -22,7 +22,6 @@ function migratePartido(raw: Record<string, unknown>): Partido {
     events: (p.events ?? []).map(e => migrateEvent(e as SportEvent)),
     createdAt: p.createdAt ?? Date.now(),
   };
-  return base;
 }
 
 export function usePartidos() {
@@ -116,6 +115,16 @@ export function usePartidos() {
     }
   )), []);
 
+  const updateClip = useCallback((
+    partidoId: string, eventId: string, clip_start: number, clip_end: number
+  ) => setPartidos(prev => prev.map(p =>
+    p.id !== partidoId ? p : {
+      ...p, events: p.events.map(e =>
+        e.id === eventId ? { ...e, clip_start, clip_end } : e
+      )
+    }
+  )), []);
+
   const clearEvents = useCallback((partidoId: string) =>
     setPartidos(prev => prev.map(p =>
       p.id !== partidoId ? p : { ...p, events: [] }
@@ -125,6 +134,6 @@ export function usePartidos() {
     partidos, loaded,
     crearPartido, borrarPartido, updateScore,
     addPlayer, removePlayer,
-    addEvent, deleteEvent, updateEventResult, clearEvents,
+    addEvent, deleteEvent, updateEventResult, updateClip, clearEvents,
   };
 }

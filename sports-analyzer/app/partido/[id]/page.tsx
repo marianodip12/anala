@@ -6,13 +6,14 @@ import EventButtons from "@/components/EventButtons";
 import EventList from "@/components/EventList";
 import Scoreboard from "@/components/Scoreboard";
 import PlayerPanel from "@/components/PlayerPanel";
+import ClipEditor from "@/components/ClipEditor";
 import { usePartidos } from "@/hooks/usePartidos";
 import type { EventTipo, EventSubtype, EventResult, VideoMode, Score } from "@/types";
 
 export default function PartidoPage({ params }: { params: { id: string } }) {
   const {
     partidos, addEvent, deleteEvent, updateEventResult,
-    clearEvents, updateScore, addPlayer, removePlayer,
+    clearEvents, updateScore, addPlayer, removePlayer, updateClip,
   } = usePartidos();
   const partido = partidos.find(p => p.id === params.id);
 
@@ -145,6 +146,13 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             />
           </section>
 
+          {/* Clip editor — full width */}
+          <ClipEditor
+            events={partido.events}
+            playerRef={videoRef}
+            onUpdateClip={(eventId, start, end) => updateClip(params.id, eventId, start, end)}
+          />
+
           {/* Event list mobile */}
           <section className="rounded-2xl bg-[#0d1117] border border-[#21262d] p-4 xl:hidden">
             <div className="flex items-center gap-2 mb-3">
@@ -179,16 +187,15 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             />
           </section>
 
-          {/* How to */}
           <div className="rounded-xl border border-[#21262d] bg-[#0d1117] p-4">
-            <p className="font-display font-semibold text-xs tracking-widest text-[#484f58] mb-3 uppercase">Flujo de marcación</p>
+            <p className="font-display font-semibold text-xs tracking-widest text-[#484f58] mb-3 uppercase">Editor de clips</p>
             <ol className="flex flex-col gap-2">
               {[
-                "Doble nivel → elegís ofensivo/defensivo + resultado",
-                "Simple → solo elegís resultado",
-                "Binario (Gol) → se marca directo, actualiza el marcador",
-                "En todos podés asociar un jugador",
-                "Click en el tiempo para volver a ese momento (−5s)",
+                "Cada evento guarda automáticamente clip_start (−5s) y clip_end",
+                "Click en Preview → va al inicio del clip",
+                "← INICIO AQUÍ → fija el inicio en el tiempo actual",
+                "FIN AQUÍ → → reproducí hasta donde querés → Confirmar fin",
+                "Seleccioná clips y exportá con comandos FFmpeg incluidos",
               ].map((s, i) => (
                 <li key={i} className="flex gap-2 items-start">
                   <span className="shrink-0 w-4 h-4 rounded-full bg-[#161b22] border border-[#30363d] flex items-center justify-center font-mono text-[9px] text-[#484f58] font-bold mt-0.5">{i+1}</span>
