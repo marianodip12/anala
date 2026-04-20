@@ -23,6 +23,12 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
   const [videoMode, setVideoMode] = useState<VideoMode>(null);
   const [showScore, setShowScore] = useState(true);
   const [showDrawEditor, setShowDrawEditor] = useState(false);
+  const [editClipRange, setEditClipRange] = useState<{start: number; end: number} | null>(null);
+
+  const openClipEditor = useCallback((start: number, end: number) => {
+    setEditClipRange({ start, end });
+    setShowDrawEditor(true);
+  }, []);
 
   const handleEvent = useCallback((
     tipo: EventTipo, subtype: EventSubtype, result: EventResult,
@@ -170,6 +176,7 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             events={partido.events}
             playerRef={videoRef}
             onUpdateClip={(eventId, start, end) => updateClip(params.id, eventId, start, end)}
+            onEditClip={videoMode === "local" ? openClipEditor : undefined}
           />
 
           {/* Event list mobile */}
@@ -226,11 +233,14 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
         </aside>
       </main>
 
-      {/* Drawing editor overlay */}
+      {/* Drawing / Clip Editor overlay */}
       {showDrawEditor && (
         <ClipDrawingEditor
-          videoRef={{ current: videoRef.current?.getVideoElement() ?? null }}
-          onClose={() => setShowDrawEditor(false)}
+          localFile={videoRef.current?.getLocalFile() ?? null}
+          initialTime={editClipRange?.start ?? (videoRef.current?.getCurrentTime() ?? 0)}
+          clipRange={editClipRange}
+          events={partido.events}
+          onClose={() => { setShowDrawEditor(false); setEditClipRange(null); }}
         />
       )}
     </div>

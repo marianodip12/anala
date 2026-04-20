@@ -14,6 +14,7 @@ interface ClipEditorProps {
   events: SportEvent[];
   playerRef: React.RefObject<PlayerHandle>;
   onUpdateClip: (eventId: string, clip_start: number, clip_end: number) => void;
+  onEditClip?: (start: number, end: number) => void;
 }
 
 function fmt(t: number) {
@@ -132,7 +133,7 @@ async function runFFmpeg(
 }
 
 // Restore the public/ffmpeg files
-export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEditorProps) {
+export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip }: ClipEditorProps) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [settingEnd, setSettingEnd] = useState<string | null>(null);
@@ -455,6 +456,12 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
                         <button onClick={() => handleSetEnd(event.id, event)}
                           className="flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg text-rose-400 font-mono text-xs transition-all">
                           FIN AQUÍ →
+                        </button>
+                      )}
+                      {onEditClip && (
+                        <button onClick={() => onEditClip(start, end)}
+                          className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 border border-violet-500/30 hover:bg-violet-500/20 rounded-lg text-violet-400 font-mono text-xs transition-all">
+                          ✏️ Editar clip
                         </button>
                       )}
                     </div>
