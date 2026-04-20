@@ -11,6 +11,7 @@ export interface VideoPlayerHandle {
   seekTo: (time: number) => void;
   getMode: () => VideoMode;
   getLocalFile: () => File | null;
+  getVideoElement: () => HTMLVideoElement | null;
 }
 
 interface VideoPlayerProps {
@@ -122,6 +123,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       },
       getMode: () => mode,
       getLocalFile: () => localFileRef.current,
+      getVideoElement: () => videoRef.current,
     }));
 
     // ── Time polling ─────────────────────────────────────────────────────────

@@ -274,9 +274,15 @@ export default function ClipEditor({ events, playerRef, onUpdateClip }: ClipEdit
         const data: Uint8Array = core.FS.readFile(outName);
         const dlBlob = new Blob([data.buffer as ArrayBuffer], { type: "video/mp4" });
         const url = URL.createObjectURL(dlBlob);
-        const a = document.createElement("a");
-        a.href = url; a.download = outName; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        // Delay between downloads — browsers block simultaneous a.click()
+        await new Promise<void>(res => setTimeout(() => {
+          const a = document.createElement("a");
+          a.href = url; a.download = outName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => { URL.revokeObjectURL(url); res(); }, 1000);
+        }, i * 800));
         core.FS.unlink(outName);
       }
 
