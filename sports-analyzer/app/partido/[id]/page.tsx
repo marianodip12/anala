@@ -107,7 +107,7 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
         <div className="flex flex-col gap-4">
           {/* Video */}
           <section className="rounded-2xl bg-[#0d1117] border border-[#21262d] p-4">
-            <VideoPlayer ref={videoRef} onModeChange={setVideoMode} />
+            <VideoPlayer ref={videoRef} onModeChange={setVideoMode} annotations={partido.annotations ?? []} />
           </section>
 
           {/* Scoreboard */}
@@ -169,8 +169,7 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
           <AnnotationEditor
             annotations={partido.annotations ?? []}
             currentTime={currentTime}
-            videoWidth={videoDims.w}
-            videoHeight={videoDims.h}
+            videoContainerRef={React.createRef()}
             onAdd={a => addAnnotation(params.id, a)}
             onDelete={aid => deleteAnnotation(params.id, aid)}
             onUpdate={(aid, patch) => updateAnnotation(params.id, aid, patch)}
