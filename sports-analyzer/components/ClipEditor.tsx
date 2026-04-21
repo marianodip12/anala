@@ -39,39 +39,86 @@ declare global {
   interface Window { createFFmpegCore?: (cfg: Record<string, unknown>) => Promise<unknown>; }
 }
 
+// ─── SIMD Detection ───────────────────────────────────────────────────────────
+// Some browsers/configs don't support WebAssembly SIMD instructions.
+// @ffmpeg/core@0.12.x is compiled WITH SIMD — we need to detect support first.
+let _simdSupported: boolean | null = null;
+async function detectSIMD(): Promise<boolean> {
+  if (_simdSupported !== null) return _simdSupported;
+  try {
+    // Minimal WASM module that uses a SIMD instruction (v128.const).
+    // If the browser doesn't support SIMD, instantiate() throws a CompileError.
+    await WebAssembly.instantiate(new Uint8Array([
+      0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,
+      2,1,0,10,10,1,8,0,65,0,253,15,253,98,11,
+    ]));
+    _simdSupported = true;
+  } catch {
+    _simdSupported = false;
+  }
+  return _simdSupported;
+}
+
+// ─── URLs ─────────────────────────────────────────────────────────────────────
+// Primary: local files (SIMD build, served from public/ffmpeg/ via copy-ffmpeg.js)
+// Fallback: CDN non-SIMD build for browsers that don't support SIMD
+const LOCAL_FFMPEG = { js: "/ffmpeg/ffmpeg-core.js", wasm: "/ffmpeg/ffmpeg-core.wasm" };
+// @ffmpeg/core@0.12.4 CDN — pre-SIMD build, compatible API (createFFmpegCore)
+const CDN_COMPAT = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.4/dist/umd";
+
+async function fetchWithProgress(
+  url: string,
+  onProgress?: (pct: number) => void,
+  startPct = 0,
+  endPct = 100
+): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
+  const total = Number(res.headers.get("content-length") ?? 0);
+  const reader = res.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    if (total > 0 && onProgress) {
+      onProgress(startPct + Math.round((loaded / total) * (endPct - startPct)));
+    }
+  }
+  const buf = new Uint8Array(loaded);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.length; }
+  return buf.buffer as ArrayBuffer;
+}
+
 async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<void> {
   if (wasmBin && coreJsInjected) { onProgress?.(100); return; }
   if (loadingPromise) return loadingPromise;
   loadingPromise = (async () => {
     onProgress?.(0);
 
-    // 1. JS (small, ~130KB)
-    const jsRes = await fetch("/ffmpeg/ffmpeg-core.js");
+    const simd = await detectSIMD();
+    const urls = simd
+      ? LOCAL_FFMPEG
+      : { js: `${CDN_COMPAT}/ffmpeg-core.js`, wasm: `${CDN_COMPAT}/ffmpeg-core.wasm` };
+
+    if (!simd) {
+      console.warn("[FFmpeg] SIMD no soportado en este navegador. Usando versión compatible desde CDN.");
+    }
+
+    // 1. JS (~130KB)
+    const jsRes = await fetch(urls.js);
     if (!jsRes.ok) throw new Error(`ffmpeg-core.js: HTTP ${jsRes.status}`);
     const jsText = await jsRes.text();
     onProgress?.(10);
 
-    // 2. WASM (~30MB) with streaming progress
-    const wasmRes = await fetch("/ffmpeg/ffmpeg-core.wasm");
-    if (!wasmRes.ok) throw new Error(`ffmpeg-core.wasm: HTTP ${wasmRes.status}`);
-    const total = Number(wasmRes.headers.get("content-length") ?? 0);
-    const reader = wasmRes.body!.getReader();
-    const chunks: Uint8Array[] = [];
-    let loaded = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      loaded += value.length;
-      if (total > 0) onProgress?.(10 + Math.round((loaded / total) * 85));
-    }
-    const buf = new Uint8Array(loaded);
-    let off = 0;
-    for (const c of chunks) { buf.set(c, off); off += c.length; }
-    wasmBin = buf.buffer as ArrayBuffer;
+    // 2. WASM (~30MB) con progreso
+    wasmBin = await fetchWithProgress(urls.wasm, onProgress, 10, 95);
     onProgress?.(95);
 
-    // 3. Inject JS so createFFmpegCore is on window
+    // 3. Inyectar JS para que createFFmpegCore quede en window
     if (!coreJsInjected) {
       const blob = new Blob([jsText], { type: "text/javascript" });
       const url = URL.createObjectURL(blob);
