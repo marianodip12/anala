@@ -1,6 +1,6 @@
 "use client";
 import React, { useState } from "react";
-import { Activity, Plus, Trash2, Play, Calendar, Users, Cloud } from "lucide-react";
+import { Activity, Plus, Trash2, Play, Calendar, Users, ChevronRight } from "lucide-react";
 import { usePartidos } from "@/hooks/usePartidos";
 
 function formatDate(str: string) {
@@ -10,7 +10,7 @@ function formatDate(str: string) {
 }
 
 export default function HomePage() {
-  const { partidos, crearPartido, borrarPartido, useCloud } = usePartidos();
+  const { partidos, crearPartido, borrarPartido } = usePartidos();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ nombre: "", equipoLocal: "", equipoVisitante: "", fecha: new Date().toISOString().slice(0, 10) });
 
@@ -91,13 +91,7 @@ export default function HomePage() {
         {/* Partidos list */}
         {partidos.length > 0 && (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 px-1">
-              <p className="text-[#484f58] font-mono text-xs tracking-widest">HISTORIAL — {partidos.length} partidos</p>
-              <div className={`flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded border ${useCloud ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10" : "text-[#484f58] border-[#21262d]"}`}>
-                <Cloud className="w-3 h-3" />
-                {useCloud ? "Supabase" : "Local"}
-              </div>
-            </div>
+            <p className="text-[#484f58] font-mono text-xs tracking-widest px-1">HISTORIAL — {partidos.length} partidos</p>
             {partidos.map(p => (
               <div key={p.id}
                 className="group flex items-center gap-4 p-4 rounded-2xl bg-[#0d1117] border border-[#21262d] hover:border-[#30363d] transition-all">
