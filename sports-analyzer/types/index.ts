@@ -75,21 +75,6 @@ export interface Score {
   visitante: number;
 }
 
-export interface Annotation {
-  id: string;
-  type: "text" | "draw" | "rect" | "arrow";
-  start_time: number;
-  duration: number;
-  text?: string;
-  x: number;
-  y: number;
-  points?: { x: number; y: number }[];
-  x2?: number;
-  y2?: number;
-  color: string;
-  fontSize?: number;
-}
-
 export interface Partido {
   id: string;
   nombre: string;
@@ -99,7 +84,6 @@ export interface Partido {
   score: Score;
   events: SportEvent[];
   players: Player[];
-  annotations: Annotation[];
   createdAt: number;
 }
 

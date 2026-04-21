@@ -237,15 +237,13 @@ export default function ClipDrawingEditor({ localFile, initialTime=0, clipRange,
         <div className="w-px h-4 bg-[#30363d]"/>
         <div className="flex items-center gap-1.5">
           <span className="text-[#484f58] text-xs font-mono hidden sm:block">Duración</span>
-          <select value={annDur} onChange={e=>setAnnDur(+e.target.value)}
-            className="bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs font-mono text-[#8b949e] focus:outline-none">
-            <option value={0}>∞ Permanente</option>
-            <option value={1}>1 seg</option>
-            <option value={2}>2 seg</option>
-            <option value={3}>3 seg</option>
-            <option value={5}>5 seg</option>
-            <option value={10}>10 seg</option>
-          </select>
+          <input
+            type="number" min={0} max={999} step={0.5}
+            value={annDur}
+            onChange={e => setAnnDur(Math.max(0, +e.target.value))}
+            className="w-16 bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs font-mono text-[#8b949e] focus:outline-none focus:border-violet-500/50 text-center"
+          />
+          <span className="text-[#484f58] text-xs font-mono">{annDur === 0 ? "∞" : "seg"}</span>
         </div>
         <div className="w-px h-4 bg-[#30363d]"/>
         <button onClick={()=>setAnnotations(a=>a.slice(0,-1))} disabled={annotations.length===0}

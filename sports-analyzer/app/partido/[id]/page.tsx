@@ -1,29 +1,34 @@
 "use client";
 import React, { useRef, useCallback, useState } from "react";
-import { Activity, ArrowLeft, Download, ChevronDown, ChevronUp } from "lucide-react";
+import { Activity, ArrowLeft, Download, ChevronDown, ChevronUp, Pencil, Cloud } from "lucide-react";
 import VideoPlayer, { VideoPlayerHandle } from "@/components/VideoPlayer";
 import EventButtons from "@/components/EventButtons";
 import EventList from "@/components/EventList";
 import Scoreboard from "@/components/Scoreboard";
 import PlayerPanel from "@/components/PlayerPanel";
 import ClipEditor from "@/components/ClipEditor";
-import AnnotationEditor from "@/components/AnnotationEditor";
+import ClipDrawingEditor from "@/components/ClipDrawingEditor";
 import { usePartidos } from "@/hooks/usePartidos";
 import type { EventTipo, EventSubtype, EventResult, VideoMode, Score } from "@/types";
 
 export default function PartidoPage({ params }: { params: { id: string } }) {
   const {
     partidos, addEvent, deleteEvent, updateEventResult,
-    clearEvents, updateScore, addPlayer, removePlayer, updateClip,
-    addAnnotation, deleteAnnotation, updateAnnotation,
+    clearEvents, updateScore, addPlayer, removePlayer, updateClip, useCloud,
   } = usePartidos();
   const partido = partidos.find(p => p.id === params.id);
 
   const videoRef = useRef<VideoPlayerHandle>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const [videoMode, setVideoMode] = useState<VideoMode>(null);
   const [showScore, setShowScore] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [videoDims] = useState({ w: 640, h: 360 });
+  const [showDrawEditor, setShowDrawEditor] = useState(false);
+  const [editClipRange, setEditClipRange] = useState<{start: number; end: number} | null>(null);
+
+  const openClipEditor = useCallback((start: number, end: number) => {
+    setEditClipRange({ start, end });
+    setShowDrawEditor(true);
+  }, []);
 
   const handleEvent = useCallback((
     tipo: EventTipo, subtype: EventSubtype, result: EventResult,
@@ -47,14 +52,6 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
     a.click();
     URL.revokeObjectURL(url);
   }, [partido]);
-
-  // Poll currentTime for annotations
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      if (videoRef.current) setCurrentTime(videoRef.current.getCurrentTime());
-    }, 200);
-    return () => clearInterval(interval);
-  }, []);
 
   if (!partido) {
     return (
@@ -88,6 +85,22 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {/* Cloud sync indicator */}
+            <div title={useCloud ? "Guardado en Supabase" : "Guardado localmente"}
+              className={`flex items-center gap-1 text-xs font-mono px-2 py-1 rounded-lg border ${useCloud ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10" : "text-[#484f58] border-[#21262d]"}`}>
+              <Cloud className="w-3 h-3" />
+              <span className="hidden sm:block">{useCloud ? "Cloud" : "Local"}</span>
+            </div>
+
+            {/* Draw editor button */}
+            {videoMode === "local" && (
+              <button onClick={() => setShowDrawEditor(true)}
+                className="flex items-center gap-1.5 text-xs font-mono text-violet-400 hover:text-violet-300 border border-violet-500/30 hover:border-violet-500/50 px-3 py-1.5 rounded-lg bg-violet-500/10 transition-all">
+                <Pencil className="w-3.5 h-3.5" />
+                <span className="hidden sm:block">EDITOR</span>
+              </button>
+            )}
+
             {partido.events.length > 0 && (
               <button onClick={handleExport}
                 className="flex items-center gap-1.5 text-xs font-mono text-[#8b949e] hover:text-white border border-[#30363d] hover:border-[#484f58] px-3 py-1.5 rounded-lg bg-[#161b22] transition-all">
@@ -107,7 +120,7 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
         <div className="flex flex-col gap-4">
           {/* Video */}
           <section className="rounded-2xl bg-[#0d1117] border border-[#21262d] p-4">
-            <VideoPlayer ref={videoRef} onModeChange={setVideoMode} annotations={partido.annotations ?? []} />
+            <VideoPlayer ref={videoRef} onModeChange={setVideoMode} partidoId={params.id} />
           </section>
 
           {/* Scoreboard */}
@@ -163,16 +176,7 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             events={partido.events}
             playerRef={videoRef}
             onUpdateClip={(eventId, start, end) => updateClip(params.id, eventId, start, end)}
-          />
-
-          {/* Annotations */}
-          <AnnotationEditor
-            annotations={partido.annotations ?? []}
-            currentTime={currentTime}
-            videoContainerRef={React.createRef()}
-            onAdd={a => addAnnotation(params.id, a)}
-            onDelete={aid => deleteAnnotation(params.id, aid)}
-            onUpdate={(aid, patch) => updateAnnotation(params.id, aid, patch)}
+            onEditClip={videoMode === "local" ? openClipEditor : undefined}
           />
 
           {/* Event list mobile */}
@@ -228,6 +232,17 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
           </div>
         </aside>
       </main>
+
+      {/* Drawing / Clip Editor overlay */}
+      {showDrawEditor && (
+        <ClipDrawingEditor
+          localFile={videoRef.current?.getLocalFile() ?? null}
+          initialTime={editClipRange?.start ?? (videoRef.current?.getCurrentTime() ?? 0)}
+          clipRange={editClipRange}
+          events={partido.events}
+          onClose={() => { setShowDrawEditor(false); setEditClipRange(null); }}
+        />
+      )}
     </div>
   );
 }
