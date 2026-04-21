@@ -109,7 +109,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [wasmPct, setWasmPct] = useState(0);
-  const fileBufferRef = useRef<ArrayBuffer | null>(null);
+  const fileBufferRef = useRef<Uint8Array | null>(null);
   const lastFileRef = useRef<File | null>(null);
 
   const clips = useMemo(() => {
@@ -210,7 +210,8 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
       // Read file buffer once and cache it
       if (lastFileRef.current !== localFile || !fileBufferRef.current) {
         setExportProgress({ current: 0, total: clipsToExport.length, label: "Leyendo video..." });
-        fileBufferRef.current = await localFile.arrayBuffer();
+        // Store as Uint8Array — ArrayBuffer gets detached by WASM, Uint8Array view doesn't
+        fileBufferRef.current = new Uint8Array(await localFile.arrayBuffer());
         lastFileRef.current = localFile;
       }
 
@@ -227,9 +228,10 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         // Create a FRESH core instance for each clip — the old one is spent after exec()
         const core = await newFFmpegCore();
 
-        // Slice a FRESH copy of the buffer — the previous instance may have detached it
-        const freshBuf = fileBufferRef.current!.slice(0);
-        core.FS.writeFile(inputName, new Uint8Array(freshBuf));
+        // slice() on Uint8Array always returns a fresh copy of the bytes
+        // This is critical — WASM detaches any ArrayBuffer passed to it
+        const inputBytes = fileBufferRef.current!.slice();
+        core.FS.writeFile(inputName, inputBytes);
 
         const args = [
           "-ss", clip.clip_start.toFixed(3),
