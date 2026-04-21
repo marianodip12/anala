@@ -93,8 +93,10 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function newFFmpegCore(): Promise<any> {
   if (!window.createFFmpegCore || !wasmBin) throw new Error("FFmpeg no cargado");
+  // slice(0) creates a fresh copy — WASM takes ownership and detaches the original buffer
+  const wasmCopy = wasmBin.slice(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (window.createFFmpegCore as any)({ wasmBinary: wasmBin });
+  return (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
 }
 
 // Restore the public/ffmpeg files
@@ -225,8 +227,9 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         // Create a FRESH core instance for each clip — the old one is spent after exec()
         const core = await newFFmpegCore();
 
-        // Write input file into this fresh instance's FS
-        core.FS.writeFile(inputName, new Uint8Array(fileBufferRef.current!));
+        // Slice a FRESH copy of the buffer — the previous instance may have detached it
+        const freshBuf = fileBufferRef.current!.slice(0);
+        core.FS.writeFile(inputName, new Uint8Array(freshBuf));
 
         const args = [
           "-ss", clip.clip_start.toFixed(3),
