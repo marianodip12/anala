@@ -32,239 +32,279 @@ function duration(start: number, end: number) {
 
 type FilterState = { tipo: string; subtype: string; result: string };
 
-// ─── FFmpeg Core — runs directly in main thread, no Worker, no SharedArrayBuffer ──
-// Two paths are supported:
-//   Path A (primary):  @ffmpeg/core@0.12.6 — fast, requires WebAssembly SIMD
-//   Path B (fallback): @ffmpeg/ffmpeg@0.11.6 wrapper — slower, no SIMD needed
-// We try A first; on CompileError (SIMD unsupported) we switch to B permanently.
 
-let wasmBin: ArrayBuffer | null = null;
-let coreJsInjected = false;
-let loadingPromise: Promise<void> | null = null;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type FFmpegWrapper = any;
-let fallbackFFmpeg: FFmpegWrapper | null = null;
-let fallbackLoadingPromise: Promise<void> | null = null;
-let useFallback = false; // set to true once SIMD path fails
-
-declare global {
-  interface Window {
-    createFFmpegCore?: (cfg: Record<string, unknown>) => Promise<unknown>;
-    FFmpeg?: { createFFmpeg: (opts: Record<string, unknown>) => FFmpegWrapper; fetchFile?: (f: File|Blob|ArrayBuffer) => Promise<Uint8Array> };
-  }
-}
-
-// @ffmpeg/core@0.12.6 (SIMD, fast) — primary path
-const LOCAL_FFMPEG = { js: "/ffmpeg/ffmpeg-core.js", wasm: "/ffmpeg/ffmpeg-core.wasm" };
-const CDN_COMPAT = {
-  js:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-  wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-};
-
-// @ffmpeg/ffmpeg@0.11.6 wrapper (non-SIMD, Emscripten) — fallback path
-const FALLBACK_WRAPPER_JS = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
-const FALLBACK_CORE_PATH  = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.10.0/dist";
-
-function resetFFmpegState() {
-  wasmBin = null;
-  coreJsInjected = false;
-  loadingPromise = null;
-}
-
-async function fetchWithProgress(url: string, onProgress?: (pct: number) => void, startPct = 0, endPct = 100): Promise<ArrayBuffer> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-  const total = Number(res.headers.get("content-length") ?? 0);
-  const reader = res.body!.getReader();
-  const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value); loaded += value.length;
-    if (total > 0 && onProgress) onProgress(startPct + Math.round((loaded / total) * (endPct - startPct)));
-  }
-  const buf = new Uint8Array(loaded); let off = 0;
-  for (const c of chunks) { buf.set(c, off); off += c.length; }
-  return buf.buffer as ArrayBuffer;
-}
-
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error(`Error al cargar script: ${src}`));
-    document.head.appendChild(s);
-  });
-}
-
-// ── Path A: 0.12.x (SIMD) ────────────────────────────────────────────────────
-async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<void> {
-  if (wasmBin && coreJsInjected) { onProgress?.(100); return; }
-  if (loadingPromise) return loadingPromise;
-  loadingPromise = (async () => {
-    onProgress?.(0);
-    const tryUrls = [LOCAL_FFMPEG, CDN_COMPAT];
-    let lastErr: unknown = null;
-    let jsText: string | null = null;
-    let ok = false;
-
-    for (const urls of tryUrls) {
-      try {
-        const jsRes = await fetch(urls.js);
-        if (!jsRes.ok) throw new Error(`HTTP ${jsRes.status}`);
-        jsText = await jsRes.text();
-        onProgress?.(10);
-        wasmBin = await fetchWithProgress(urls.wasm, onProgress, 10, 95);
-        ok = true;
-        if (urls === CDN_COMPAT) console.warn("[FFmpeg] Usando CDN (local no disponible)");
-        break;
-      } catch (err) { lastErr = err; console.warn(`[FFmpeg] ${urls.js}:`, err); }
-    }
-
-    if (!ok || !jsText || !wasmBin) throw lastErr instanceof Error ? lastErr : new Error("No se pudo cargar FFmpeg");
-
-    if (!coreJsInjected) {
-      const blob = new Blob([jsText], { type: "text/javascript" });
-      const url = URL.createObjectURL(blob);
-      await loadScript(url).finally(() => URL.revokeObjectURL(url));
-      coreJsInjected = true;
-    }
-    onProgress?.(100);
-  })();
-
-  return loadingPromise.catch(err => { resetFFmpegState(); throw err; });
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function newFFmpegCore(): Promise<any> {
-  if (!window.createFFmpegCore || !wasmBin) throw new Error("FFmpeg no cargado");
-  const wasmCopy = wasmBin.slice(0);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const core = await (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
-  if (core && typeof core.ready?.then === "function") await core.ready;
-  return core;
-}
-
-// ── Path B: @ffmpeg/ffmpeg@0.11.6 wrapper (non-SIMD) ─────────────────────────
-async function ensureFallbackLoaded(onProgress?: (pct: number) => void): Promise<void> {
-  if (fallbackFFmpeg) { onProgress?.(100); return; }
-  if (fallbackLoadingPromise) return fallbackLoadingPromise;
-  fallbackLoadingPromise = (async () => {
-    onProgress?.(0);
-    console.warn("[FFmpeg] Cargando fallback @ffmpeg/ffmpeg@0.11.6 (sin SIMD)...");
-    await loadScript(FALLBACK_WRAPPER_JS);
-    onProgress?.(15);
-    if (!window.FFmpeg?.createFFmpeg) throw new Error("FFmpeg wrapper no disponible tras carga");
-
-    const ffmpeg = window.FFmpeg.createFFmpeg({
-      log: false,
-      corePath: `${FALLBACK_CORE_PATH}/ffmpeg-core.js`,
-    });
-    // The wrapper downloads ~25MB of WASM; we can only approximate progress here.
-    onProgress?.(30);
-    await ffmpeg.load();
-    onProgress?.(100);
-    fallbackFFmpeg = ffmpeg;
-  })();
-  return fallbackLoadingPromise.catch(err => { fallbackLoadingPromise = null; throw err; });
-}
-
-// ── Unified API ──────────────────────────────────────────────────────────────
-// Returns a "runner" with the same shape regardless of path taken.
-interface FFmpegRunner {
-  writeFile: (name: string, data: Uint8Array) => void;
-  readFile:  (name: string) => Uint8Array;
-  run: (args: string[]) => Promise<number>;
-}
-
-async function acquireRunner(): Promise<FFmpegRunner> {
-  if (useFallback) {
-    await ensureFallbackLoaded();
-    const ff = fallbackFFmpeg!;
-    return {
-      writeFile: (n, d) => ff.FS("writeFile", n, d),
-      readFile:  (n)    => ff.FS("readFile", n) as Uint8Array,
-      run:       async (args) => { try { await ff.run(...args); return 0; } catch { return 1; } },
-    };
-  }
-
-  // Try primary 0.12.x path; on SIMD CompileError, switch to fallback
-  try {
-    const core = await newFFmpegCore();
-    const runPrimary = (args: string[]): number => {
-      if (typeof core.exec === "function")     return core.exec(...args);
-      if (typeof core.ffmpeg === "function")   return core.ffmpeg(args);
-      if (typeof core.callMain === "function") return core.callMain(args);
-      const methods = Object.keys(core).filter(k => { try { return typeof core[k] === "function"; } catch { return false; } });
-      console.error("[FFmpeg] Core methods:", methods, core);
-      throw new Error(`Core API desconocida. Métodos: ${methods.slice(0,15).join(",")}`);
-    };
-    return {
-      writeFile: (n, d) => core.FS.writeFile(n, d),
-      readFile:  (n)    => core.FS.readFile(n) as Uint8Array,
-      run:       async (args) => runPrimary(args),
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const isSimdErr = msg.includes("SIMD") || msg.includes("CompileError") || msg.includes("Aborted");
-    if (!isSimdErr) throw err;
-    console.warn("[FFmpeg] SIMD no soportado, cambiando a fallback permanente:", msg);
-    useFallback = true;
-    resetFFmpegState();
-    return acquireRunner(); // retry via fallback path
-  }
-}
-
-// ─── File buffer cache ───────────────────────────────────────────────────────
-const fileBufferCache = new WeakMap<File, Uint8Array>();
-
-async function getFileBuffer(file: File): Promise<Uint8Array> {
-  const cached = fileBufferCache.get(file);
-  if (cached) return cached;
-  const buf = new Uint8Array(await file.arrayBuffer());
-  fileBufferCache.set(file, buf);
-  return buf;
-}
-
-// ─── Unified load entry point ────────────────────────────────────────────────
-async function ensureAnyFFmpegReady(onProgress?: (pct: number) => void): Promise<void> {
-  if (useFallback) return ensureFallbackLoaded(onProgress);
-  return ensureFFmpegLoaded(onProgress);
-}
-
-// ─── Cut a single clip from a source file ────────────────────────────────────
-async function cutClip(
+// ─── MediaRecorder-based cutter (universal fallback for any video format) ────
+// Works with MP4, MOV, WebM, etc. — plays the video at 1x speed and records
+// only the requested range. Produces WebM output by default (or MP4 on Safari).
+// Slower than copy-cutting but works without any WASM or SIMD.
+async function cutWithMediaRecorder(
   sourceFile: File,
   clipStart: number,
   clipEnd: number,
-  outName: string,
-): Promise<Uint8Array> {
-  const buf = await getFileBuffer(sourceFile);
-  const ext = sourceFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
-  const inputName = `src.${ext}`;
-  const needsRemux = ["mov", "avi", "mkv"].includes(ext);
+  onProgress?: (pct: number) => void,
+): Promise<{ data: Uint8Array; mime: string; ext: string }> {
+  const url = URL.createObjectURL(sourceFile);
+  try {
+    const video = document.createElement("video");
+    video.src = url;
+    video.muted = false;
+    video.crossOrigin = "anonymous";
+    video.preload = "auto";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (video as any).playsInline = true;
 
-  const runner = await acquireRunner();
-  runner.writeFile(inputName, buf);
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("No se pudo cargar el video"));
+      setTimeout(() => reject(new Error("Timeout cargando video")), 15000);
+    });
 
-  const args = [
-    "-ss", clipStart.toFixed(3),
-    "-to", clipEnd.toFixed(3),
-    "-i", inputName,
-    ...(needsRemux ? ["-c:v", "copy", "-c:a", "aac"] : ["-c", "copy"]),
-    "-movflags", "+faststart",
-    "-avoid_negative_ts", "make_zero",
-    outName,
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) throw new Error("El video no tiene dimensiones válidas");
+
+    // Capture video frames via canvas + captureStream
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("No se pudo crear contexto de canvas");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const videoStream = (canvas as any).captureStream(30) as MediaStream;
+
+    // Try to capture audio from the video element
+    let combinedStream = videoStream;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const audioStream = (video as any).captureStream?.() as MediaStream | undefined;
+      if (audioStream) {
+        const audioTracks = audioStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          combinedStream = new MediaStream([
+            ...videoStream.getVideoTracks(),
+            ...audioTracks,
+          ]);
+        }
+      }
+    } catch { /* ignore — export without audio */ }
+
+    // Pick best available MIME type
+    const candidates = [
+      "video/mp4;codecs=avc1",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ];
+    let mimeType = "";
+    for (const c of candidates) {
+      if (MediaRecorder.isTypeSupported(c)) { mimeType = c; break; }
+    }
+    if (!mimeType) throw new Error("MediaRecorder no soporta ningún formato de video");
+
+    const ext = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
+
+    const recorder = new MediaRecorder(combinedStream, {
+      mimeType,
+      videoBitsPerSecond: 5_000_000, // 5 Mbps — decent quality
+    });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+    const clipDuration = clipEnd - clipStart;
+
+    // Seek to start and wait for ready
+    video.currentTime = clipStart;
+    await new Promise<void>((resolve) => {
+      const handler = () => { video.removeEventListener("seeked", handler); resolve(); };
+      video.addEventListener("seeked", handler);
+    });
+
+    recorder.start(200);
+    video.play().catch(() => {});
+
+    // Draw frames from video to canvas while playing
+    let rafId = 0;
+    const draw = () => {
+      if (video.ended || video.currentTime >= clipEnd) return;
+      ctx.drawImage(video, 0, 0, w, h);
+      const pct = Math.min(100, Math.round(((video.currentTime - clipStart) / clipDuration) * 100));
+      onProgress?.(pct);
+      rafId = requestAnimationFrame(draw);
+    };
+    rafId = requestAnimationFrame(draw);
+
+    // Stop when we reach clipEnd
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (video.currentTime >= clipEnd || video.ended) {
+          video.pause();
+          cancelAnimationFrame(rafId);
+          resolve();
+        } else {
+          setTimeout(check, 50);
+        }
+      };
+      check();
+    });
+
+    // Stop recorder and wait for final chunk
+    const recordedBlob = await new Promise<Blob>((resolve) => {
+      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+      recorder.stop();
+    });
+
+    const arrayBuf = await recordedBlob.arrayBuffer();
+    return { data: new Uint8Array(arrayBuf), mime: mimeType, ext };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ─── Unified cutter ──────────────────────────────────────────────────────────
+// Strategy: use MediaRecorder (works everywhere, no WASM issues).
+// Output is WebM or MP4 depending on browser support — CapCut, Premiere,
+// DaVinci, and most editors accept both.
+async function cutClipUniversal(
+  sourceFile: File,
+  clipStart: number,
+  clipEnd: number,
+  onProgress?: (pct: number) => void,
+): Promise<{ data: Uint8Array; ext: string }> {
+  const result = await cutWithMediaRecorder(sourceFile, clipStart, clipEnd, onProgress);
+  return { data: result.data, ext: result.ext };
+}
+
+// ─── Concat multiple clips into one video ────────────────────────────────────
+// For same-source clips, we concatenate the WebM/MP4 files produced by
+// MediaRecorder. WebM concat is trivial (just concat bytes — browsers handle
+// the container), MP4 concat is more complex but we use a simple approach:
+// record them back-to-back into a single MediaRecorder session.
+async function compileClipsUniversal(
+  clips: Array<{ file: File; start: number; end: number }>,
+  onProgress?: (overallPct: number, label: string) => void,
+): Promise<{ data: Uint8Array; ext: string }> {
+  if (clips.length === 0) throw new Error("No hay clips para compilar");
+  if (clips.length === 1) {
+    const r = await cutClipUniversal(clips[0].file, clips[0].start, clips[0].end, p => onProgress?.(p, "Cortando clip..."));
+    return r;
+  }
+
+  // Multi-clip compile: record each clip sequentially into the SAME MediaRecorder
+  // by swapping video sources and canvas streams. We use a persistent canvas.
+  const w = 1280, h = 720; // target dimensions — we'll scale to fit
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("No se pudo crear contexto");
+
+  // Use first clip to determine dimensions
+  const firstClip = clips[0];
+  const firstUrl = URL.createObjectURL(firstClip.file);
+  const probeVideo = document.createElement("video");
+  probeVideo.src = firstUrl;
+  probeVideo.muted = true;
+  await new Promise<void>((resolve, reject) => {
+    probeVideo.onloadedmetadata = () => resolve();
+    probeVideo.onerror = () => reject(new Error("No se pudo leer el primer clip"));
+    setTimeout(() => reject(new Error("Timeout")), 10000);
+  });
+  canvas.width  = probeVideo.videoWidth  || w;
+  canvas.height = probeVideo.videoHeight || h;
+  URL.revokeObjectURL(firstUrl);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const videoStream = (canvas as any).captureStream(30) as MediaStream;
+
+  const candidates = [
+    "video/mp4;codecs=avc1",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
   ];
+  let mimeType = "";
+  for (const c of candidates) {
+    if (MediaRecorder.isTypeSupported(c)) { mimeType = c; break; }
+  }
+  if (!mimeType) throw new Error("MediaRecorder no soporta video");
+  const ext = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
-  const ret = await runner.run(args);
-  if (ret !== 0) throw new Error(`FFmpeg error (código ${ret})`);
+  const recorder = new MediaRecorder(videoStream, {
+    mimeType,
+    videoBitsPerSecond: 5_000_000,
+  });
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  recorder.start(200);
 
-  const data = runner.readFile(outName);
-  return new Uint8Array(data);
+  const totalDuration = clips.reduce((a, c) => a + (c.end - c.start), 0);
+  let elapsedDuration = 0;
+
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i];
+    const clipDur = clip.end - clip.start;
+    const label = `Clip ${i + 1}/${clips.length}`;
+
+    const url = URL.createObjectURL(clip.file);
+    const video = document.createElement("video");
+    video.src = url;
+    video.muted = true; // audio mixing across clips is complex — skip for multi-clip
+    video.crossOrigin = "anonymous";
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error(`Clip ${i+1} no carga`));
+        setTimeout(() => reject(new Error(`Clip ${i+1} timeout`)), 15000);
+      });
+
+      video.currentTime = clip.start;
+      await new Promise<void>((resolve) => {
+        const h = () => { video.removeEventListener("seeked", h); resolve(); };
+        video.addEventListener("seeked", h);
+      });
+
+      video.play().catch(() => {});
+
+      let rafId = 0;
+      const draw = () => {
+        if (video.currentTime >= clip.end || video.ended) return;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const localPct = Math.min(1, (video.currentTime - clip.start) / clipDur);
+        const overallPct = Math.round(((elapsedDuration + localPct * clipDur) / totalDuration) * 100);
+        onProgress?.(overallPct, label);
+        rafId = requestAnimationFrame(draw);
+      };
+      rafId = requestAnimationFrame(draw);
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (video.currentTime >= clip.end || video.ended) {
+            video.pause();
+            cancelAnimationFrame(rafId);
+            resolve();
+          } else {
+            setTimeout(check, 50);
+          }
+        };
+        check();
+      });
+
+      elapsedDuration += clipDur;
+    } finally {
+      URL.revokeObjectURL(url);
+      video.removeAttribute("src");
+    }
+  }
+
+  const recordedBlob = await new Promise<Blob>((resolve) => {
+    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+    recorder.stop();
+  });
+
+  const arrayBuf = await recordedBlob.arrayBuffer();
+  return { data: new Uint8Array(arrayBuf), ext };
 }
 
 export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip }: ClipEditorProps) {
@@ -335,12 +375,12 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
     return localFile ?? null;
   }, [playerRef]);
 
-  // ── Export: individual MP4s (FIXED — no .slice() on video buffer) ─────────
+  // ── Export: individual clips (MediaRecorder — works anywhere) ─────────────
   const handleExportIndividual = useCallback(async () => {
     const clipsToExport = buildClipsToExport();
     const localFile = resolveFile(0);
 
-    // No local file → export JSON with ffmpeg commands
+    // No local file → export JSON
     if (!localFile) {
       const exportData = {
         exported_at: new Date().toISOString(),
@@ -351,9 +391,6 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
           timestamp: c.time, clip_start: c.clip_start, clip_end: c.clip_end,
           duration_seconds: Math.max(0, c.clip_end - c.clip_start), label: c.label,
         })),
-        ffmpeg_commands: clipsToExport.map((c, i) =>
-          `ffmpeg -i INPUT.mp4 -ss ${c.clip_start.toFixed(2)} -to ${c.clip_end.toFixed(2)} -c copy clip_${String(i+1).padStart(2,"0")}_${c.tipo.replace(/\s+/g,"_")}.mp4`
-        ),
       };
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob); const a = document.createElement("a");
@@ -364,14 +401,8 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
 
     try {
       setExportError(null); setClipErrors([]); abortRef.current = false;
-
-      const alreadyLoaded = wasmBin && coreJsInjected;
-      if (!alreadyLoaded) {
-        setExportStatus("loading-ffmpeg"); setWasmPct(0);
-        setExportProgress({ current: 0, total: clipsToExport.length, label: "Descargando FFmpeg..." });
-      }
-      await ensureAnyFFmpegReady(pct => setWasmPct(pct));
       setExportStatus("exporting");
+      setWasmPct(0);
 
       const errors: string[] = [];
 
@@ -380,17 +411,16 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         const clip = clipsToExport[i];
         const sourceFile = resolveFile(clip.videoFileIndex) ?? localFile;
         const safeName = clip.tipo.replace(/[^a-zA-Z0-9]/g, "_");
-        const outName = `clip_${String(i+1).padStart(2,"0")}_${safeName}.mp4`;
 
         setExportProgress({ current: i + 1, total: clipsToExport.length, label: clip.label });
 
         try {
-          // ✅ FIX: cutClip uses getFileBuffer (cached, no slice)
-          const data = await cutClip(sourceFile, clip.clip_start, clip.clip_end, outName);
+          const result = await cutClipUniversal(sourceFile, clip.clip_start, clip.clip_end, pct => setWasmPct(pct));
+          const outName = `clip_${String(i+1).padStart(2,"0")}_${safeName}.${result.ext}`;
+          const mimeType = result.ext === "mp4" ? "video/mp4" : "video/webm";
 
-          // Sequential download with short delay so browser doesn't block
           await new Promise<void>((resolve) => {
-            const url = URL.createObjectURL(new Blob([data.buffer as ArrayBuffer], { type: "video/mp4" }));
+            const url = URL.createObjectURL(new Blob([result.data.buffer as ArrayBuffer], { type: mimeType }));
             const a = document.createElement("a");
             a.href = url; a.download = outName; a.style.display = "none";
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -400,7 +430,6 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
           const msg = err instanceof Error ? err.message : "error desconocido";
           console.error(`Clip ${i+1} falló:`, msg);
           errors.push(`Clip ${i+1} (${clip.label}): ${msg}`);
-          // ✅ FIX: continue with next clip instead of stopping everything
         }
       }
 
@@ -421,7 +450,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
     }
   }, [buildClipsToExport, resolveFile]);
 
-  // ── Export: compile all selected clips into one MP4 ───────────────────────
+  // ── Export: compile all selected clips into one video ─────────────────────
   const handleCompile = useCallback(async () => {
     const clipsToExport = buildClipsToExport();
     const localFile = resolveFile(0);
@@ -434,83 +463,36 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
 
     try {
       setExportError(null); setClipErrors([]); abortRef.current = false;
-
-      const alreadyLoaded = wasmBin && coreJsInjected;
-      if (!alreadyLoaded) {
-        setExportStatus("loading-ffmpeg"); setWasmPct(0);
-        setExportProgress({ current: 0, total: clipsToExport.length + 1, label: "Descargando FFmpeg..." });
-      }
-      await ensureAnyFFmpegReady(pct => setWasmPct(pct));
-      setExportStatus("exporting");
-
-      // ── Step 1: cut each clip ────────────────────────────────────────────
-      const cutBuffers: { name: string; data: Uint8Array }[] = [];
-      const errors: string[] = [];
-
-      for (let i = 0; i < clipsToExport.length; i++) {
-        if (abortRef.current) break;
-        const clip = clipsToExport[i];
-        const sourceFile = resolveFile(clip.videoFileIndex) ?? localFile;
-        const outName = `clip_${String(i+1).padStart(3,"0")}.mp4`;
-
-        setExportProgress({
-          current: i + 1,
-          total: clipsToExport.length + 1,
-          label: `Cortando ${i+1}/${clipsToExport.length}: ${clip.label}`,
-        });
-
-        try {
-          const data = await cutClip(sourceFile, clip.clip_start, clip.clip_end, outName);
-          cutBuffers.push({ name: outName, data });
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : "error";
-          errors.push(`Clip ${i+1}: ${msg}`);
-          console.warn(`Clip ${i+1} falló, lo salteamos:`, msg);
-        }
-      }
-
-      if (cutBuffers.length === 0) throw new Error("Ningún clip se pudo cortar.");
-      setClipErrors(errors);
-
-      // ── Step 2: concatenate ───────────────────────────────────────────────
       setExportStatus("compiling");
+      setWasmPct(0);
+
+      const clipsForCompile = clipsToExport.map(c => ({
+        file: resolveFile(c.videoFileIndex) ?? localFile,
+        start: c.clip_start,
+        end: c.clip_end,
+      }));
+
       setExportProgress({
-        current: clipsToExport.length + 1,
-        total: clipsToExport.length + 1,
-        label: `Compilando ${cutBuffers.length} clips en un solo video...`,
+        current: 1,
+        total: clipsToExport.length,
+        label: `Compilando ${clipsToExport.length} clips...`,
       });
 
-      const compileRunner = await acquireRunner();
+      const result = await compileClipsUniversal(clipsForCompile, (pct, label) => {
+        setWasmPct(pct);
+        setExportProgress({ current: 1, total: clipsToExport.length, label });
+      });
 
-      // Write all cut clips into the runner's virtual FS
-      for (const { name, data } of cutBuffers) {
-        compileRunner.writeFile(name, data);
-      }
-
-      // Create concat list (FFmpeg concat demuxer format)
-      const concatList = cutBuffers.map(c => `file '${c.name}'`).join("\n");
-      compileRunner.writeFile("concat.txt", new TextEncoder().encode(concatList));
-
-      const concatArgs = [
-        "-f", "concat", "-safe", "0", "-i", "concat.txt",
-        "-c", "copy", "-movflags", "+faststart",
-        "compilado.mp4",
-      ];
-
-      const ret = await compileRunner.run(concatArgs);
-      if (ret !== 0) throw new Error(`Error al concatenar clips (código ${ret})`);
-
-      const compiled = compileRunner.readFile("compilado.mp4");
-      const blob = new Blob([new Uint8Array(compiled).buffer as ArrayBuffer], { type: "video/mp4" });
+      const mimeType = result.ext === "mp4" ? "video/mp4" : "video/webm";
+      const blob = new Blob([result.data.buffer as ArrayBuffer], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `compilado_${new Date().toISOString().slice(0,10)}.mp4`;
+      a.download = `compilado_${new Date().toISOString().slice(0,10)}.${result.ext}`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
 
       setExportStatus("done");
-      if (errors.length > 0) setExportError(`${errors.length} clip(s) fallaron y fueron salteados.`);
       setTimeout(() => { setExportStatus("idle"); setExportProgress(null); }, 5000);
     } catch (err: unknown) {
       console.error(err);
@@ -603,7 +585,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
                     :isBusy&&exportStatus!=="compiling"?`${exportProgress?.current??0}/${exportProgress?.total??0}`
                     :exportStatus==="done"?"¡LISTO!"
                     :exportStatus==="error"?"ERROR"
-                    :`${selected.size} MP4${selected.size>1?"s":""}`}
+                    :`${selected.size} VIDEO${selected.size>1?"S":""}`}
                 </button>
 
                 {/* Compile into 1 video button */}
@@ -613,7 +595,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
                     :isBusy?"bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait opacity-75"
                     :"bg-amber-500/15 border-amber-500/40 hover:bg-amber-500/25 text-amber-400"}`}>
                   {exportStatus==="compiling"?<Loader2 className="w-3.5 h-3.5 animate-spin" />:<Combine className="w-3.5 h-3.5" />}
-                  {exportStatus==="compiling"?"COMPILANDO...":"COMPILAR EN 1 MP4"}
+                  {exportStatus==="compiling"?"COMPILANDO...":"COMPILAR EN 1 VIDEO"}
                 </button>
               </div>
             )}
@@ -733,7 +715,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
                 <div className="flex items-center gap-2 min-w-0">
                   <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />
                   <p className="text-violet-400 font-mono text-xs truncate">
-                    {exportStatus==="loading-ffmpeg"?`Descargando FFmpeg... ${wasmPct}%`:exportProgress.label}
+                    {exportStatus==="loading-ffmpeg"?`Procesando... ${wasmPct}%`:exportProgress.label}
                   </p>
                 </div>
                 {exportStatus==="loading-ffmpeg"&&<span className="text-violet-300 font-mono text-xs shrink-0">{wasmPct}%</span>}
@@ -742,8 +724,8 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
                 <div className="h-full bg-violet-500 rounded-full transition-all duration-200"
                   style={{width: exportStatus==="loading-ffmpeg"?`${wasmPct}%`:`${(exportProgress.current/exportProgress.total)*100}%`}} />
               </div>
-              {exportStatus==="loading-ffmpeg"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Solo se descarga una vez · queda cacheado en el browser</p>}
-              {exportStatus==="compiling"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Concatenando clips con FFmpeg concat demuxer...</p>}
+              {exportStatus==="loading-ffmpeg"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Procesamiento en el navegador · puede tardar unos segundos</p>}
+              {exportStatus==="compiling"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Grabando clips en tiempo real...</p>}
             </div>
           )}
 
@@ -755,17 +737,20 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
                   <p className="text-[#484f58] font-mono text-xs mb-1.5 uppercase tracking-widest">Opciones de exportación:</p>
                   <div className="flex flex-col gap-1">
                     <p className="text-[#8b949e] font-mono text-xs">
-                      <span className="text-violet-400">MP4s individuales</span> — descarga cada clip por separado con -c copy
+                      <span className="text-violet-400">Videos individuales</span> — descarga cada clip por separado
                     </p>
                     <p className="text-[#8b949e] font-mono text-xs">
-                      <span className="text-amber-400">Compilar en 1 MP4</span> — une todos los clips seleccionados en un solo video
+                      <span className="text-amber-400">Compilar en 1 video</span> — une todos los clips seleccionados
+                    </p>
+                    <p className="text-[#484f58] font-mono text-xs mt-1">
+                      Compatible con CapCut, Premiere, DaVinci y cualquier editor
                     </p>
                   </div>
                 </>
               ) : (
                 <>
                   <p className="text-[#484f58] font-mono text-xs mb-1 uppercase tracking-widest">Sin video local — se exporta JSON:</p>
-                  <p className="text-[#8b949e] font-mono text-xs">Cargá un video local para exportar MP4 directamente</p>
+                  <p className="text-[#8b949e] font-mono text-xs">Cargá un video local para exportar video directamente</p>
                 </>
               )}
             </div>

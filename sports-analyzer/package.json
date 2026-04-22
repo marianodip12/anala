@@ -4,10 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/copy-ffmpeg.js && next build",
+    "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "postinstall": "node scripts/copy-ffmpeg.js"
+    "lint": "next lint"
   },
   "dependencies": {
     "next": "14.2.5",
@@ -15,7 +14,6 @@
     "react-dom": "^18",
     "lucide-react": "^0.383.0",
     "uuid": "^9.0.1",
-    "@ffmpeg/core": "^0.12.6",
     "@supabase/supabase-js": "^2.45.0"
   },
   "devDependencies": {
