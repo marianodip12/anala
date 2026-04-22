@@ -33,38 +33,38 @@ function duration(start: number, end: number) {
 type FilterState = { tipo: string; subtype: string; result: string };
 
 // ─── FFmpeg Core — runs directly in main thread, no Worker, no SharedArrayBuffer ──
+// Two paths are supported:
+//   Path A (primary):  @ffmpeg/core@0.12.6 — fast, requires WebAssembly SIMD
+//   Path B (fallback): @ffmpeg/ffmpeg@0.11.6 wrapper — slower, no SIMD needed
+// We try A first; on CompileError (SIMD unsupported) we switch to B permanently.
+
 let wasmBin: ArrayBuffer | null = null;
 let coreJsInjected = false;
 let loadingPromise: Promise<void> | null = null;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FFmpegWrapper = any;
+let fallbackFFmpeg: FFmpegWrapper | null = null;
+let fallbackLoadingPromise: Promise<void> | null = null;
+let useFallback = false; // set to true once SIMD path fails
+
 declare global {
-  interface Window { createFFmpegCore?: (cfg: Record<string, unknown>) => Promise<unknown>; }
+  interface Window {
+    createFFmpegCore?: (cfg: Record<string, unknown>) => Promise<unknown>;
+    FFmpeg?: { createFFmpeg: (opts: Record<string, unknown>) => FFmpegWrapper; fetchFile?: (f: File|Blob|ArrayBuffer) => Promise<Uint8Array> };
+  }
 }
 
-// ─── SIMD Detection ───────────────────────────────────────────────────────────
-// NOTE: detectSIMD() only tests basic v128 support. Some browsers pass this
-// but still fail on FFmpeg's more advanced SIMD instructions. The real test is
-// whether newFFmpegCore() succeeds — we catch CompileErrors there and retry.
-let _simdSupported: boolean | null = null;
-async function detectSIMD(): Promise<boolean> {
-  if (_simdSupported !== null) return _simdSupported;
-  try {
-    await WebAssembly.instantiate(new Uint8Array([
-      0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,
-      2,1,0,10,10,1,8,0,65,0,253,15,253,98,11,
-    ]));
-    _simdSupported = true;
-  } catch { _simdSupported = false; }
-  return _simdSupported;
-}
-
-// LOCAL: SIMD build served from /public/ffmpeg/ (@ffmpeg/core@0.12.6)
+// @ffmpeg/core@0.12.6 (SIMD, fast) — primary path
 const LOCAL_FFMPEG = { js: "/ffmpeg/ffmpeg-core.js", wasm: "/ffmpeg/ffmpeg-core.wasm" };
-// CDN: same version 0.12.6 UMD build — used if local files are missing/404
 const CDN_COMPAT = {
   js:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
   wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
 };
+
+// @ffmpeg/ffmpeg@0.11.6 wrapper (non-SIMD, Emscripten) — fallback path
+const FALLBACK_WRAPPER_JS = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
+const FALLBACK_CORE_PATH  = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.10.0/dist";
 
 function resetFFmpegState() {
   wasmBin = null;
@@ -90,78 +90,135 @@ async function fetchWithProgress(url: string, onProgress?: (pct: number) => void
   return buf.buffer as ArrayBuffer;
 }
 
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Error al cargar script: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+// ── Path A: 0.12.x (SIMD) ────────────────────────────────────────────────────
 async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<void> {
   if (wasmBin && coreJsInjected) { onProgress?.(100); return; }
   if (loadingPromise) return loadingPromise;
   loadingPromise = (async () => {
     onProgress?.(0);
-
-    // Try local build first, fall back to CDN (same version) on any error.
     const tryUrls = [LOCAL_FFMPEG, CDN_COMPAT];
     let lastErr: unknown = null;
     let jsText: string | null = null;
-    let loaded = false;
+    let ok = false;
 
     for (const urls of tryUrls) {
       try {
         const jsRes = await fetch(urls.js);
-        if (!jsRes.ok) throw new Error(`ffmpeg-core.js: HTTP ${jsRes.status}`);
+        if (!jsRes.ok) throw new Error(`HTTP ${jsRes.status}`);
         jsText = await jsRes.text();
         onProgress?.(10);
         wasmBin = await fetchWithProgress(urls.wasm, onProgress, 10, 95);
-        loaded = true;
-        if (urls === CDN_COMPAT) console.warn("[FFmpeg] Usando CDN (archivos locales no disponibles)");
+        ok = true;
+        if (urls === CDN_COMPAT) console.warn("[FFmpeg] Usando CDN (local no disponible)");
         break;
-      } catch (err) {
-        lastErr = err;
-        console.warn(`[FFmpeg] Falla cargando desde ${urls.js}:`, err);
-      }
+      } catch (err) { lastErr = err; console.warn(`[FFmpeg] ${urls.js}:`, err); }
     }
 
-    if (!loaded || !jsText || !wasmBin) {
-      throw lastErr instanceof Error ? lastErr : new Error("No se pudo cargar FFmpeg desde ningún origen");
-    }
-
-    onProgress?.(95);
+    if (!ok || !jsText || !wasmBin) throw lastErr instanceof Error ? lastErr : new Error("No se pudo cargar FFmpeg");
 
     if (!coreJsInjected) {
       const blob = new Blob([jsText], { type: "text/javascript" });
       const url = URL.createObjectURL(blob);
-      await new Promise<void>((res, rej) => {
-        const s = document.createElement("script"); s.src = url;
-        s.onload = () => { URL.revokeObjectURL(url); res(); };
-        s.onerror = () => { URL.revokeObjectURL(url); rej(new Error("Error al cargar ffmpeg-core.js")); };
-        document.head.appendChild(s);
-      });
+      await loadScript(url).finally(() => URL.revokeObjectURL(url));
       coreJsInjected = true;
     }
     onProgress?.(100);
   })();
 
-  return loadingPromise.catch(err => {
-    resetFFmpegState();
-    throw err;
-  });
+  return loadingPromise.catch(err => { resetFFmpegState(); throw err; });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function newFFmpegCore(): Promise<any> {
   if (!window.createFFmpegCore || !wasmBin) throw new Error("FFmpeg no cargado");
-  const wasmCopy = wasmBin.slice(0); // WASM takes ownership — needs a fresh copy
+  const wasmCopy = wasmBin.slice(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const core = await (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
-  // Some Emscripten builds expose a `.ready` promise that must be awaited
-  // before FS / exec calls work reliably.
-  if (core && typeof core.ready?.then === "function") {
-    await core.ready;
-  }
+  if (core && typeof core.ready?.then === "function") await core.ready;
   return core;
 }
 
-// ─── File buffer cache — avoids re-reading large video files ─────────────────
-// Key: File object (reference equality). Value: Uint8Array.
-// NOTE: We do NOT slice() before passing to FS.writeFile — Emscripten copies
-// data into its heap and does NOT detach the source ArrayBuffer.
+// ── Path B: @ffmpeg/ffmpeg@0.11.6 wrapper (non-SIMD) ─────────────────────────
+async function ensureFallbackLoaded(onProgress?: (pct: number) => void): Promise<void> {
+  if (fallbackFFmpeg) { onProgress?.(100); return; }
+  if (fallbackLoadingPromise) return fallbackLoadingPromise;
+  fallbackLoadingPromise = (async () => {
+    onProgress?.(0);
+    console.warn("[FFmpeg] Cargando fallback @ffmpeg/ffmpeg@0.11.6 (sin SIMD)...");
+    await loadScript(FALLBACK_WRAPPER_JS);
+    onProgress?.(15);
+    if (!window.FFmpeg?.createFFmpeg) throw new Error("FFmpeg wrapper no disponible tras carga");
+
+    const ffmpeg = window.FFmpeg.createFFmpeg({
+      log: false,
+      corePath: `${FALLBACK_CORE_PATH}/ffmpeg-core.js`,
+    });
+    // The wrapper downloads ~25MB of WASM; we can only approximate progress here.
+    onProgress?.(30);
+    await ffmpeg.load();
+    onProgress?.(100);
+    fallbackFFmpeg = ffmpeg;
+  })();
+  return fallbackLoadingPromise.catch(err => { fallbackLoadingPromise = null; throw err; });
+}
+
+// ── Unified API ──────────────────────────────────────────────────────────────
+// Returns a "runner" with the same shape regardless of path taken.
+interface FFmpegRunner {
+  writeFile: (name: string, data: Uint8Array) => void;
+  readFile:  (name: string) => Uint8Array;
+  run: (args: string[]) => Promise<number>;
+}
+
+async function acquireRunner(): Promise<FFmpegRunner> {
+  if (useFallback) {
+    await ensureFallbackLoaded();
+    const ff = fallbackFFmpeg!;
+    return {
+      writeFile: (n, d) => ff.FS("writeFile", n, d),
+      readFile:  (n)    => ff.FS("readFile", n) as Uint8Array,
+      run:       async (args) => { try { await ff.run(...args); return 0; } catch { return 1; } },
+    };
+  }
+
+  // Try primary 0.12.x path; on SIMD CompileError, switch to fallback
+  try {
+    const core = await newFFmpegCore();
+    const runPrimary = (args: string[]): number => {
+      if (typeof core.exec === "function")     return core.exec(...args);
+      if (typeof core.ffmpeg === "function")   return core.ffmpeg(args);
+      if (typeof core.callMain === "function") return core.callMain(args);
+      const methods = Object.keys(core).filter(k => { try { return typeof core[k] === "function"; } catch { return false; } });
+      console.error("[FFmpeg] Core methods:", methods, core);
+      throw new Error(`Core API desconocida. Métodos: ${methods.slice(0,15).join(",")}`);
+    };
+    return {
+      writeFile: (n, d) => core.FS.writeFile(n, d),
+      readFile:  (n)    => core.FS.readFile(n) as Uint8Array,
+      run:       async (args) => runPrimary(args),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isSimdErr = msg.includes("SIMD") || msg.includes("CompileError") || msg.includes("Aborted");
+    if (!isSimdErr) throw err;
+    console.warn("[FFmpeg] SIMD no soportado, cambiando a fallback permanente:", msg);
+    useFallback = true;
+    resetFFmpegState();
+    return acquireRunner(); // retry via fallback path
+  }
+}
+
+// ─── File buffer cache ───────────────────────────────────────────────────────
 const fileBufferCache = new WeakMap<File, Uint8Array>();
 
 async function getFileBuffer(file: File): Promise<Uint8Array> {
@@ -172,29 +229,10 @@ async function getFileBuffer(file: File): Promise<Uint8Array> {
   return buf;
 }
 
-// ─── API compatibility shim ──────────────────────────────────────────────────
-// Different @ffmpeg/core builds expose the entry point differently:
-//   - 0.12.x:  core.exec(...args)   — variadic
-//   - Some:    core.ffmpeg(args)    — wrapped helper
-//   - Raw Emscripten:  core.callMain(args)
-//   - Fallback:  core.cwrap('proxy_main', 'number', [...])(argc, argv_ptr)
-// We try them in order and log what's available when all fail.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function execFFmpeg(core: any, args: string[]): number {
-  if (typeof core.exec === "function")     return core.exec(...args) as number;
-  if (typeof core.ffmpeg === "function")   return core.ffmpeg(args) as number;
-  if (typeof core.callMain === "function") return core.callMain(args) as number;
-
-  // Diagnostic: list all function-typed top-level properties
-  const methods = Object.keys(core).filter(k => {
-    try { return typeof core[k] === "function"; } catch { return false; }
-  });
-  console.error("[FFmpeg] Core object methods available:", methods);
-  console.error("[FFmpeg] Core object:", core);
-  throw new Error(
-    `FFmpeg core incompatible: no expone exec/ffmpeg/callMain. ` +
-    `Métodos disponibles: ${methods.slice(0, 20).join(", ") || "(ninguno)"}`
-  );
+// ─── Unified load entry point ────────────────────────────────────────────────
+async function ensureAnyFFmpegReady(onProgress?: (pct: number) => void): Promise<void> {
+  if (useFallback) return ensureFallbackLoaded(onProgress);
+  return ensureFFmpegLoaded(onProgress);
 }
 
 // ─── Cut a single clip from a source file ────────────────────────────────────
@@ -209,10 +247,8 @@ async function cutClip(
   const inputName = `src.${ext}`;
   const needsRemux = ["mov", "avi", "mkv"].includes(ext);
 
-  const core = await newFFmpegCore();
-
-  // Pass buffer directly — no .slice() needed for FS.writeFile
-  core.FS.writeFile(inputName, buf);
+  const runner = await acquireRunner();
+  runner.writeFile(inputName, buf);
 
   const args = [
     "-ss", clipStart.toFixed(3),
@@ -224,11 +260,11 @@ async function cutClip(
     outName,
   ];
 
-  const ret = execFFmpeg(core, args);
+  const ret = await runner.run(args);
   if (ret !== 0) throw new Error(`FFmpeg error (código ${ret})`);
 
-  const data: Uint8Array = core.FS.readFile(outName);
-  return new Uint8Array(data); // copy out before core goes out of scope
+  const data = runner.readFile(outName);
+  return new Uint8Array(data);
 }
 
 export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip }: ClipEditorProps) {
@@ -334,7 +370,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         setExportStatus("loading-ffmpeg"); setWasmPct(0);
         setExportProgress({ current: 0, total: clipsToExport.length, label: "Descargando FFmpeg..." });
       }
-      await ensureFFmpegLoaded(pct => setWasmPct(pct));
+      await ensureAnyFFmpegReady(pct => setWasmPct(pct));
       setExportStatus("exporting");
 
       const errors: string[] = [];
@@ -404,7 +440,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         setExportStatus("loading-ffmpeg"); setWasmPct(0);
         setExportProgress({ current: 0, total: clipsToExport.length + 1, label: "Descargando FFmpeg..." });
       }
-      await ensureFFmpegLoaded(pct => setWasmPct(pct));
+      await ensureAnyFFmpegReady(pct => setWasmPct(pct));
       setExportStatus("exporting");
 
       // ── Step 1: cut each clip ────────────────────────────────────────────
@@ -444,16 +480,16 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         label: `Compilando ${cutBuffers.length} clips en un solo video...`,
       });
 
-      const compileCore = await newFFmpegCore();
+      const compileRunner = await acquireRunner();
 
-      // Write all cut clips into the new core's virtual FS
+      // Write all cut clips into the runner's virtual FS
       for (const { name, data } of cutBuffers) {
-        compileCore.FS.writeFile(name, data);
+        compileRunner.writeFile(name, data);
       }
 
       // Create concat list (FFmpeg concat demuxer format)
       const concatList = cutBuffers.map(c => `file '${c.name}'`).join("\n");
-      compileCore.FS.writeFile("concat.txt", new TextEncoder().encode(concatList));
+      compileRunner.writeFile("concat.txt", new TextEncoder().encode(concatList));
 
       const concatArgs = [
         "-f", "concat", "-safe", "0", "-i", "concat.txt",
@@ -461,10 +497,10 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         "compilado.mp4",
       ];
 
-      const ret = execFFmpeg(compileCore, concatArgs);
+      const ret = await compileRunner.run(concatArgs);
       if (ret !== 0) throw new Error(`Error al concatenar clips (código ${ret})`);
 
-      const compiled: Uint8Array = compileCore.FS.readFile("compilado.mp4");
+      const compiled = compileRunner.readFile("compilado.mp4");
       const blob = new Blob([new Uint8Array(compiled).buffer as ArrayBuffer], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
