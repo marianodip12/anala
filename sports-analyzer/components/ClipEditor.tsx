@@ -165,6 +165,21 @@ async function getFileBuffer(file: File): Promise<Uint8Array> {
   return buf;
 }
 
+// ─── API compatibility shim ──────────────────────────────────────────────────
+// @ffmpeg/core@0.12.x exposes core.exec(...args) — spread args style
+// @ffmpeg/core@0.11.x exposes core.callMain(args) — Emscripten's default
+// We use whichever is available so our fallback path works too.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function execFFmpeg(core: any, args: string[]): number {
+  if (typeof core.exec === "function") {
+    return core.exec(...args) as number;
+  }
+  if (typeof core.callMain === "function") {
+    return core.callMain(args) as number;
+  }
+  throw new Error("FFmpeg core incompatible: no tiene exec() ni callMain()");
+}
+
 // ─── Cut a single clip from a source file ────────────────────────────────────
 async function cutClip(
   sourceFile: File,
@@ -192,7 +207,7 @@ async function cutClip(
     outName,
   ];
 
-  const ret: number = core.exec(...args);
+  const ret = execFFmpeg(core, args);
   if (ret !== 0) throw new Error(`FFmpeg error (código ${ret})`);
 
   const data: Uint8Array = core.FS.readFile(outName);
@@ -429,7 +444,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         "compilado.mp4",
       ];
 
-      const ret: number = compileCore.exec(...concatArgs);
+      const ret = execFFmpeg(compileCore, concatArgs);
       if (ret !== 0) throw new Error(`Error al concatenar clips (código ${ret})`);
 
       const compiled: Uint8Array = compileCore.FS.readFile("compilado.mp4");
