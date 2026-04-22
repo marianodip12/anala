@@ -56,6 +56,9 @@ export interface SportEvent {
   clip_start:  number;          // time - 5
   clip_end:    number;          // time
 
+  // Multi-video: index into the VideoPlayer's files array (0 = first/only file)
+  videoFileIndex?: number;
+
   // Legacy – keep for backward compat, map to result
   resultado?: EventResult;
 }

@@ -35,7 +35,8 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
     playerId: string | null, playerName: string | null,
   ) => {
     const time = videoRef.current?.getCurrentTime() ?? 0;
-    addEvent(params.id, time, tipo, subtype, result, playerId, playerName);
+    const fileIndex = (videoRef.current as { getActiveFileIndex?: () => number })?.getActiveFileIndex?.() ?? 0;
+    addEvent(params.id, time, tipo, subtype, result, playerId, playerName, fileIndex);
   }, [addEvent, params.id]);
 
   const handleSeek = useCallback((time: number) => {

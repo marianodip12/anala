@@ -54,8 +54,7 @@ export function usePartidos() {
     (async () => {
       const cloud = await sbLoad();
       if (cloud !== null) {
-        setPartidos(cloud);
-        setUseCloud(true);
+        setPartidos(cloud); setUseCloud(true);
       } else {
         try {
           const raw = localStorage.getItem(LS_KEY) ?? localStorage.getItem("sporttag-partidos-v2");
@@ -79,8 +78,8 @@ export function usePartidos() {
     });
   }, [useCloud]);
 
-  const crearPartido = useCallback((nombre: string, equipoLocal: string, equipoVisitante: string, fecha: string): Partido => {
-    const p: Partido = { id: uuidv4(), nombre, equipoLocal, equipoVisitante, fecha, score: { local: 0, visitante: 0 }, events: [], players: [], createdAt: Date.now() };
+  const crearPartido = useCallback((nombre: string, equipoLocal="", equipoVisitante="", fecha=""): Partido => {
+    const p: Partido = { id: uuidv4(), nombre, equipoLocal, equipoVisitante, fecha, score: { local:0, visitante:0 }, players: [], events: [], createdAt: Date.now() };
     mutate(prev => [p, ...prev], async () => { await sbUpsert(p); });
     return p;
   }, [mutate]);
@@ -89,9 +88,9 @@ export function usePartidos() {
     mutate(prev => prev.filter(p => p.id !== id), async () => { await sbDelete(id); });
   }, [mutate]);
 
-  const updateScore = useCallback((id: string, score: Score) => {
-    mutate(prev => prev.map(p => p.id === id ? { ...p, score } : p),
-      async next => { const p = next.find(x => x.id === id); if (p) await sbUpsert(p); });
+  const updateScore = useCallback((partidoId: string, score: Score) => {
+    mutate(prev => prev.map(p => p.id !== partidoId ? p : { ...p, score }),
+      async next => { const p = next.find(x => x.id === partidoId); if (p) await sbUpsert(p); });
   }, [mutate]);
 
   const addPlayer = useCallback((partidoId: string, name: string, number?: string): Player => {
@@ -106,8 +105,19 @@ export function usePartidos() {
       async next => { const p = next.find(x => x.id === partidoId); if (p) await sbUpsert(p); });
   }, [mutate]);
 
-  const addEvent = useCallback((partidoId: string, time: number, tipo: EventTipo, subtype: EventSubtype = null, result: EventResult = null, playerId: string | null = null, playerName: string | null = null): SportEvent => {
-    const event: SportEvent = { id: uuidv4(), time, tipo, createdAt: Date.now(), subtype, result, player_id: playerId, player_name: playerName, clip_start: Math.max(0, time - 5), clip_end: time };
+  // ── addEvent now accepts videoFileIndex ──────────────────────────────────
+  const addEvent = useCallback((
+    partidoId: string, time: number, tipo: EventTipo,
+    subtype: EventSubtype = null, result: EventResult = null,
+    playerId: string | null = null, playerName: string | null = null,
+    videoFileIndex: number = 0,
+  ): SportEvent => {
+    const event: SportEvent = {
+      id: uuidv4(), time, tipo, createdAt: Date.now(),
+      subtype, result, player_id: playerId, player_name: playerName,
+      clip_start: Math.max(0, time - 5), clip_end: time,
+      videoFileIndex,
+    };
     mutate(prev => prev.map(p => {
       if (p.id !== partidoId) return p;
       const events = [...p.events, event].sort((a, b) => a.time - b.time);
@@ -135,7 +145,7 @@ export function usePartidos() {
   }, [mutate]);
 
   const clearEvents = useCallback((partidoId: string) => {
-    mutate(prev => prev.map(p => p.id !== partidoId ? p : { ...p, events: [] }),
+    mutate(prev => prev.map(p => p.id !== partidoId ? p : { ...p, events: [], score: { local:0, visitante:0 } }),
       async next => { const p = next.find(x => x.id === partidoId); if (p) await sbUpsert(p); });
   }, [mutate]);
 
