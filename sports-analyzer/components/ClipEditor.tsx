@@ -288,7 +288,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
 
           // Sequential download with short delay so browser doesn't block
           await new Promise<void>((resolve) => {
-            const url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+            const url = URL.createObjectURL(new Blob([data.buffer as ArrayBuffer], { type: "video/mp4" }));
             const a = document.createElement("a");
             a.href = url; a.download = outName; a.style.display = "none";
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -399,7 +399,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
       if (ret !== 0) throw new Error(`Error al concatenar clips (código ${ret})`);
 
       const compiled: Uint8Array = compileCore.FS.readFile("compilado.mp4");
-      const blob = new Blob([new Uint8Array(compiled)], { type: "video/mp4" });
+      const blob = new Blob([new Uint8Array(compiled).buffer as ArrayBuffer], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
