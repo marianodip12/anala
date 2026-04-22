@@ -42,6 +42,9 @@ declare global {
 }
 
 // ─── SIMD Detection ───────────────────────────────────────────────────────────
+// NOTE: detectSIMD() only tests basic v128 support. Some browsers pass this
+// but still fail on FFmpeg's more advanced SIMD instructions. The real test is
+// whether newFFmpegCore() succeeds — we catch CompileErrors there and retry.
 let _simdSupported: boolean | null = null;
 async function detectSIMD(): Promise<boolean> {
   if (_simdSupported !== null) return _simdSupported;
@@ -55,8 +58,20 @@ async function detectSIMD(): Promise<boolean> {
   return _simdSupported;
 }
 
+// LOCAL: SIMD build served from /public/ffmpeg/
 const LOCAL_FFMPEG = { js: "/ffmpeg/ffmpeg-core.js", wasm: "/ffmpeg/ffmpeg-core.wasm" };
-const CDN_COMPAT = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.4/dist/umd";
+// CDN FALLBACK: @ffmpeg/core@0.11.0 — last version that does NOT require SIMD.
+// @ffmpeg/core@0.12.x ALL require SIMD, so we use 0.11.0 for non-SIMD browsers.
+const CDN_COMPAT = {
+  js:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+  wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.wasm",
+};
+
+function resetFFmpegState() {
+  wasmBin = null;
+  coreJsInjected = false;
+  loadingPromise = null;
+}
 
 async function fetchWithProgress(url: string, onProgress?: (pct: number) => void, startPct = 0, endPct = 100): Promise<ArrayBuffer> {
   const res = await fetch(url);
@@ -82,8 +97,8 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
   loadingPromise = (async () => {
     onProgress?.(0);
     const simd = await detectSIMD();
-    const urls = simd ? LOCAL_FFMPEG : { js: `${CDN_COMPAT}/ffmpeg-core.js`, wasm: `${CDN_COMPAT}/ffmpeg-core.wasm` };
-    if (!simd) console.warn("[FFmpeg] SIMD no soportado. Usando CDN.");
+    const urls = simd ? LOCAL_FFMPEG : CDN_COMPAT;
+    if (!simd) console.warn("[FFmpeg] SIMD no detectado — usando CDN no-SIMD (@ffmpeg/core@0.11.0).");
 
     const jsRes = await fetch(urls.js);
     if (!jsRes.ok) throw new Error(`ffmpeg-core.js: HTTP ${jsRes.status}`);
@@ -106,15 +121,34 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
     }
     onProgress?.(100);
   })();
-  return loadingPromise;
+
+  // ✅ FIX: reset loadingPromise on failure so the next attempt retries fresh
+  return loadingPromise.catch(err => {
+    resetFFmpegState();
+    throw err;
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function newFFmpegCore(): Promise<any> {
+async function newFFmpegCore(isFallback = false): Promise<any> {
   if (!window.createFFmpegCore || !wasmBin) throw new Error("FFmpeg no cargado");
   const wasmCopy = wasmBin.slice(0); // WASM binary needs a fresh copy (takes ownership)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isSIMDError = msg.includes("SIMD") || msg.includes("CompileError") || msg.includes("Aborted");
+    // ✅ FIX: if SIMD error on first attempt, force non-SIMD CDN and retry once
+    if (isSIMDError && !isFallback) {
+      console.warn("[FFmpeg] SIMD falló en instanciación — cambiando a build no-SIMD (CDN 0.11.0)...");
+      _simdSupported = false;
+      resetFFmpegState();
+      await ensureFFmpegLoaded();
+      return newFFmpegCore(true); // retry with non-SIMD build, no further fallback
+    }
+    throw err;
+  }
 }
 
 // ─── File buffer cache — avoids re-reading large video files ─────────────────
