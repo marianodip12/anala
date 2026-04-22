@@ -59,9 +59,12 @@ async function cutWithMediaRecorder(
       setTimeout(() => reject(new Error("Timeout cargando video")), 15000);
     });
 
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-    if (!w || !h) throw new Error("El video no tiene dimensiones válidas");
+    let w = video.videoWidth || 1280;
+    let h = video.videoHeight || 720;
+    if (w < 64 || h < 64) {
+      w = 1280;
+      h = 720;
+    }
 
     // Capture video frames via canvas + captureStream
     const canvas = document.createElement("canvas");
