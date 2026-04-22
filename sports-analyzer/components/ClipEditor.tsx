@@ -58,13 +58,12 @@ async function detectSIMD(): Promise<boolean> {
   return _simdSupported;
 }
 
-// LOCAL: SIMD build served from /public/ffmpeg/
+// LOCAL: SIMD build served from /public/ffmpeg/ (@ffmpeg/core@0.12.6)
 const LOCAL_FFMPEG = { js: "/ffmpeg/ffmpeg-core.js", wasm: "/ffmpeg/ffmpeg-core.wasm" };
-// CDN FALLBACK: @ffmpeg/core@0.11.0 — last version that does NOT require SIMD.
-// @ffmpeg/core@0.12.x ALL require SIMD, so we use 0.11.0 for non-SIMD browsers.
+// CDN: same version 0.12.6 UMD build — used if local files are missing/404
 const CDN_COMPAT = {
-  js:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
-  wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.wasm",
+  js:   "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+  wasm: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
 };
 
 function resetFFmpegState() {
@@ -96,16 +95,33 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
   if (loadingPromise) return loadingPromise;
   loadingPromise = (async () => {
     onProgress?.(0);
-    const simd = await detectSIMD();
-    const urls = simd ? LOCAL_FFMPEG : CDN_COMPAT;
-    if (!simd) console.warn("[FFmpeg] SIMD no detectado — usando CDN no-SIMD (@ffmpeg/core@0.11.0).");
 
-    const jsRes = await fetch(urls.js);
-    if (!jsRes.ok) throw new Error(`ffmpeg-core.js: HTTP ${jsRes.status}`);
-    const jsText = await jsRes.text();
-    onProgress?.(10);
+    // Try local build first, fall back to CDN (same version) on any error.
+    const tryUrls = [LOCAL_FFMPEG, CDN_COMPAT];
+    let lastErr: unknown = null;
+    let jsText: string | null = null;
+    let loaded = false;
 
-    wasmBin = await fetchWithProgress(urls.wasm, onProgress, 10, 95);
+    for (const urls of tryUrls) {
+      try {
+        const jsRes = await fetch(urls.js);
+        if (!jsRes.ok) throw new Error(`ffmpeg-core.js: HTTP ${jsRes.status}`);
+        jsText = await jsRes.text();
+        onProgress?.(10);
+        wasmBin = await fetchWithProgress(urls.wasm, onProgress, 10, 95);
+        loaded = true;
+        if (urls === CDN_COMPAT) console.warn("[FFmpeg] Usando CDN (archivos locales no disponibles)");
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[FFmpeg] Falla cargando desde ${urls.js}:`, err);
+      }
+    }
+
+    if (!loaded || !jsText || !wasmBin) {
+      throw lastErr instanceof Error ? lastErr : new Error("No se pudo cargar FFmpeg desde ningún origen");
+    }
+
     onProgress?.(95);
 
     if (!coreJsInjected) {
@@ -122,7 +138,6 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
     onProgress?.(100);
   })();
 
-  // ✅ FIX: reset loadingPromise on failure so the next attempt retries fresh
   return loadingPromise.catch(err => {
     resetFFmpegState();
     throw err;
@@ -130,25 +145,17 @@ async function ensureFFmpegLoaded(onProgress?: (pct: number) => void): Promise<v
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function newFFmpegCore(isFallback = false): Promise<any> {
+async function newFFmpegCore(): Promise<any> {
   if (!window.createFFmpegCore || !wasmBin) throw new Error("FFmpeg no cargado");
-  const wasmCopy = wasmBin.slice(0); // WASM binary needs a fresh copy (takes ownership)
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const isSIMDError = msg.includes("SIMD") || msg.includes("CompileError") || msg.includes("Aborted");
-    // ✅ FIX: if SIMD error on first attempt, force non-SIMD CDN and retry once
-    if (isSIMDError && !isFallback) {
-      console.warn("[FFmpeg] SIMD falló en instanciación — cambiando a build no-SIMD (CDN 0.11.0)...");
-      _simdSupported = false;
-      resetFFmpegState();
-      await ensureFFmpegLoaded();
-      return newFFmpegCore(true); // retry with non-SIMD build, no further fallback
-    }
-    throw err;
+  const wasmCopy = wasmBin.slice(0); // WASM takes ownership — needs a fresh copy
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const core = await (window.createFFmpegCore as any)({ wasmBinary: wasmCopy });
+  // Some Emscripten builds expose a `.ready` promise that must be awaited
+  // before FS / exec calls work reliably.
+  if (core && typeof core.ready?.then === "function") {
+    await core.ready;
   }
+  return core;
 }
 
 // ─── File buffer cache — avoids re-reading large video files ─────────────────
@@ -166,18 +173,28 @@ async function getFileBuffer(file: File): Promise<Uint8Array> {
 }
 
 // ─── API compatibility shim ──────────────────────────────────────────────────
-// @ffmpeg/core@0.12.x exposes core.exec(...args) — spread args style
-// @ffmpeg/core@0.11.x exposes core.callMain(args) — Emscripten's default
-// We use whichever is available so our fallback path works too.
+// Different @ffmpeg/core builds expose the entry point differently:
+//   - 0.12.x:  core.exec(...args)   — variadic
+//   - Some:    core.ffmpeg(args)    — wrapped helper
+//   - Raw Emscripten:  core.callMain(args)
+//   - Fallback:  core.cwrap('proxy_main', 'number', [...])(argc, argv_ptr)
+// We try them in order and log what's available when all fail.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function execFFmpeg(core: any, args: string[]): number {
-  if (typeof core.exec === "function") {
-    return core.exec(...args) as number;
-  }
-  if (typeof core.callMain === "function") {
-    return core.callMain(args) as number;
-  }
-  throw new Error("FFmpeg core incompatible: no tiene exec() ni callMain()");
+  if (typeof core.exec === "function")     return core.exec(...args) as number;
+  if (typeof core.ffmpeg === "function")   return core.ffmpeg(args) as number;
+  if (typeof core.callMain === "function") return core.callMain(args) as number;
+
+  // Diagnostic: list all function-typed top-level properties
+  const methods = Object.keys(core).filter(k => {
+    try { return typeof core[k] === "function"; } catch { return false; }
+  });
+  console.error("[FFmpeg] Core object methods available:", methods);
+  console.error("[FFmpeg] Core object:", core);
+  throw new Error(
+    `FFmpeg core incompatible: no expone exec/ffmpeg/callMain. ` +
+    `Métodos disponibles: ${methods.slice(0, 20).join(", ") || "(ninguno)"}`
+  );
 }
 
 // ─── Cut a single clip from a source file ────────────────────────────────────
