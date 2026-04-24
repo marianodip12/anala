@@ -20,6 +20,8 @@ interface ClipEditorProps {
   playerRef: React.RefObject<PlayerHandle>;
   onUpdateClip: (eventId: string, clip_start: number, clip_end: number) => void;
   onEditClip?: (start: number, end: number) => void;
+  open?: boolean;
+  setOpen?: (val: boolean) => void;
 }
 
 function fmt(t: number) {
@@ -310,8 +312,10 @@ async function compileClipsUniversal(
   return { data: new Uint8Array(arrayBuf), ext };
 }
 
-export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip }: ClipEditorProps) {
-  const [open, setOpen] = useState(false);
+export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip, open: externalOpen, setOpen: externalSetOpen }: ClipEditorProps) {
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : localOpen;
+  const setOpen = externalSetOpen || setLocalOpen;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [settingEnd, setSettingEnd] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>({ tipo: "", subtype: "", result: "" });
@@ -510,9 +514,11 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
   const hasLocalFile = !!(playerRef.current as { getLocalFile?: () => File | null })?.getLocalFile?.();
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end z-50">
-      {/* Bottom panel — CapCut style */}
-      <div className="w-full bg-gradient-to-t from-[#0a0e27] via-[#0f1629] to-[#161e3a] border-t border-[#2a3a5a]">
+    <>
+      {open && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end z-50">
+          {/* Bottom panel — CapCut style */}
+          <div className="w-full bg-gradient-to-t from-[#0a0e27] via-[#0f1629] to-[#161e3a] border-t border-[#2a3a5a]">
         
         {/* Drag handle */}
         <div className="flex justify-center pt-3 pb-2">
@@ -658,5 +664,7 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         )}
       </div>
     </div>
+      )}
+    </>
   );
 }
