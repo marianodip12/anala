@@ -510,256 +510,153 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
   const hasLocalFile = !!(playerRef.current as { getLocalFile?: () => File | null })?.getLocalFile?.();
 
   return (
-    <div className="rounded-2xl bg-[#0d1117] border border-[#21262d] overflow-hidden">
-      {/* Header */}
-      <button onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-[#161b22] transition-colors">
-        <div className="flex items-center gap-2">
-          <Scissors className="w-4 h-4 text-violet-400" />
-          <span className="font-display font-semibold tracking-widest text-xs text-[#484f58] uppercase">Editor de Clips</span>
-          <span className="text-xs font-mono text-violet-400 bg-violet-500/10 border border-violet-500/20 px-1.5 py-0.5 rounded">{events.length} clips</span>
-          {selected.size > 0 && <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">{selected.size} seleccionados</span>}
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end z-50">
+      {/* Bottom panel — CapCut style */}
+      <div className="w-full bg-gradient-to-t from-[#0a0e27] via-[#0f1629] to-[#161e3a] border-t border-[#2a3a5a]">
+        
+        {/* Drag handle */}
+        <div className="flex justify-center pt-3 pb-2">
+          <div className="w-12 h-1 bg-[#2a3a5a] rounded-full" />
         </div>
-        {open ? <ChevronUp className="w-4 h-4 text-[#484f58]" /> : <ChevronDown className="w-4 h-4 text-[#484f58]" />}
-      </button>
 
-      {open && (
-        <div className="px-4 pb-4 flex flex-col gap-3">
-
-          {settingEnd && (
-            <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl animate-slide-in">
-              <span className="text-amber-400 text-lg">⏱</span>
-              <div>
-                <p className="text-amber-400 font-display font-bold text-xs tracking-wide">MODO AJUSTE DE FIN ACTIVO</p>
-                <p className="text-[#8b949e] text-xs font-mono">Reproducí hasta donde querés → click en "✓ Confirmar fin"</p>
-              </div>
+        {/* Header */}
+        <div className="px-5 py-3 flex items-center justify-between border-b border-[#2a3a5a]">
+          <div className="flex items-center gap-3">
+            <Film className="w-5 h-5 text-cyan-400" />
+            <div>
+              <p className="text-white font-semibold text-sm">Clips seleccionados</p>
+              <p className="text-[#8b9dc3] text-xs">{selected.size} de {events.length}</p>
             </div>
-          )}
-
-          {/* Filters */}
-          <div className="flex gap-2 flex-wrap items-center">
-            <Filter className="w-3.5 h-3.5 text-[#484f58]" />
-            <select value={filter.tipo} onChange={e => setFilter(f=>({...f,tipo:e.target.value}))}
-              className="bg-[#161b22] border border-[#30363d] rounded-lg px-2 py-1 text-xs font-mono text-[#8b949e] focus:outline-none transition-colors">
-              <option value="">Todos los tipos</option>
-              {uniqueTipos.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <select value={filter.subtype} onChange={e => setFilter(f=>({...f,subtype:e.target.value}))}
-              className="bg-[#161b22] border border-[#30363d] rounded-lg px-2 py-1 text-xs font-mono text-[#8b949e] focus:outline-none transition-colors">
-              <option value="">OF + DEF</option>
-              <option value="ofensivo">⚔️ Ofensivo</option>
-              <option value="defensivo">🛡️ Defensivo</option>
-            </select>
-            <select value={filter.result} onChange={e => setFilter(f=>({...f,result:e.target.value}))}
-              className="bg-[#161b22] border border-[#30363d] rounded-lg px-2 py-1 text-xs font-mono text-[#8b949e] focus:outline-none transition-colors">
-              <option value="">OK + ERR</option>
-              <option value="correcto">✓ Correcto</option>
-              <option value="incorrecto">✗ Incorrecto</option>
-            </select>
-            {(filter.tipo || filter.subtype || filter.result) && (
-              <button onClick={() => setFilter({tipo:"",subtype:"",result:""})} className="text-xs font-mono text-[#484f58] hover:text-white transition-colors">✕</button>
-            )}
           </div>
+          <button onClick={() => setOpen(false)} className="text-[#8b9dc3] hover:text-white transition-colors p-2">✕</button>
+        </div>
 
-          {/* Select all + export buttons */}
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <button onClick={toggleAll}
-              className="flex items-center gap-1.5 text-xs font-mono text-[#484f58] hover:text-white transition-colors">
-              <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${selected.size===clips.length&&clips.length>0?"bg-violet-500 border-violet-500":"border-[#30363d]"}`}>
-                {selected.size===clips.length&&clips.length>0&&<Check className="w-2.5 h-2.5 text-white" />}
-              </div>
-              {selected.size===clips.length&&clips.length>0?"Deseleccionar todo":"Seleccionar todo"}
-            </button>
+        {/* Filters */}
+        <div className="px-5 py-3 flex gap-2 flex-wrap border-b border-[#2a3a5a]">
+          <select value={filter.tipo} onChange={e => setFilter(f=>({...f,tipo:e.target.value}))}
+            className="bg-[#1a2847] border border-[#2a3a5a] rounded-lg px-3 py-1.5 text-xs font-mono text-[#8b9dc3] focus:outline-none focus:border-cyan-500 transition-colors hover:border-[#3a4a7a]">
+            <option value="">Todos</option>
+            {uniqueTipos.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select value={filter.subtype} onChange={e => setFilter(f=>({...f,subtype:e.target.value}))}
+            className="bg-[#1a2847] border border-[#2a3a5a] rounded-lg px-3 py-1.5 text-xs font-mono text-[#8b9dc3] focus:outline-none focus:border-cyan-500 transition-colors hover:border-[#3a4a7a]">
+            <option value="">OF + DEF</option>
+            <option value="ofensivo">⚔️ Ofensivo</option>
+            <option value="defensivo">🛡️ Defensivo</option>
+          </select>
+          <select value={filter.result} onChange={e => setFilter(f=>({...f,result:e.target.value}))}
+            className="bg-[#1a2847] border border-[#2a3a5a] rounded-lg px-3 py-1.5 text-xs font-mono text-[#8b9dc3] focus:outline-none focus:border-cyan-500 transition-colors hover:border-[#3a4a7a]">
+            <option value="">OK + ERR</option>
+            <option value="correcto">✓ OK</option>
+            <option value="incorrecto">✗ ERR</option>
+          </select>
+        </div>
 
-            {selected.size > 0 && (
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* Individual download button */}
-                <button onClick={handleExportIndividual} disabled={isBusy}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg font-display font-bold tracking-widest text-xs transition-all
-                    ${exportStatus==="done"?"bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
-                    :exportStatus==="error"?"bg-rose-500/15 border-rose-500/40 text-rose-400"
-                    :isBusy?"bg-violet-500/10 border-violet-500/30 text-violet-300 cursor-wait opacity-75"
-                    :"bg-violet-500/15 border-violet-500/40 hover:bg-violet-500/25 text-violet-400"}`}>
-                  {isBusy&&exportStatus!=="compiling"?<Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    :exportStatus==="done"?<CheckCircle2 className="w-3.5 h-3.5" />
-                    :exportStatus==="error"?<AlertCircle className="w-3.5 h-3.5" />
-                    :<Download className="w-3.5 h-3.5" />}
-                  {exportStatus==="loading-ffmpeg"?"CARGANDO..."
-                    :isBusy&&exportStatus!=="compiling"?`${exportProgress?.current??0}/${exportProgress?.total??0}`
-                    :exportStatus==="done"?"¡LISTO!"
-                    :exportStatus==="error"?"ERROR"
-                    :`${selected.size} VIDEO${selected.size>1?"S":""}`}
-                </button>
-
-                {/* Compile into 1 video button */}
-                <button onClick={handleCompile} disabled={isBusy}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg font-display font-bold tracking-widest text-xs transition-all
-                    ${exportStatus==="compiling"?"bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait opacity-75"
-                    :isBusy?"bg-amber-500/10 border-amber-500/30 text-amber-300 cursor-wait opacity-75"
-                    :"bg-amber-500/15 border-amber-500/40 hover:bg-amber-500/25 text-amber-400"}`}>
-                  {exportStatus==="compiling"?<Loader2 className="w-3.5 h-3.5 animate-spin" />:<Combine className="w-3.5 h-3.5" />}
-                  {exportStatus==="compiling"?"COMPILANDO...":"COMPILAR EN 1 VIDEO"}
-                </button>
-              </div>
-            )}
-          </div>
-
+        {/* Clips list — compact cards */}
+        <div className="px-5 py-3 max-h-[45vh] overflow-y-auto space-y-2 border-b border-[#2a3a5a]">
           {clips.length === 0 ? (
-            <div className="text-center py-6 text-[#484f58] font-mono text-xs">
-              <Film className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              {events.length === 0 ? "Marcá eventos para ver clips acá" : "Sin clips con estos filtros"}
+            <div className="text-center py-8 text-[#8b9dc3]">
+              <p className="text-xs">Sin clips que mostrar</p>
             </div>
           ) : (
-            <div className="flex flex-col gap-1.5 max-h-[400px] overflow-y-auto custom-scroll pr-1">
-              {clips.map(event => {
-                const cfg = getEventConfig(event.tipo);
-                const start = event.clip_start ?? Math.max(0, event.time - 5);
-                const end   = event.clip_end   ?? event.time;
-                const isEditingEnd = settingEnd === event.id;
-                const result = event.result ?? event.resultado ?? null;
-                const fileIdx = event.videoFileIndex ?? 0;
-                const allFiles = (playerRef.current as { getAllFiles?: () => File[] })?.getAllFiles?.() ?? [];
-                const hasMultipleFiles = allFiles.length > 1;
-                return (
-                  <div key={event.id}
-                    className={`flex flex-col gap-2 p-3 rounded-xl border transition-all ${isEditingEnd?"border-amber-500/50 bg-amber-500/5":"border-[#21262d] bg-[#161b22] hover:border-[#30363d]"}`}>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => toggleSelect(event.id)}
-                        className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${selected.has(event.id)?"bg-violet-500 border-violet-500":"border-[#30363d]"}`}>
-                        {selected.has(event.id) && <Check className="w-2.5 h-2.5 text-white" />}
-                      </button>
-                      <span style={{fontSize:"1rem"}}>{cfg.emoji}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`font-display font-bold text-xs ${cfg.color}`}>{event.tipo.toUpperCase()}</span>
-                          {hasMultipleFiles && (
-                            <span className="text-[10px] font-mono px-1 py-0.5 rounded border border-violet-500/20 bg-violet-500/10 text-violet-400">
-                              V{fileIdx+1}
-                            </span>
-                          )}
-                          {event.subtype && (
-                            <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${event.subtype==="ofensivo"?"bg-emerald-500/10 border-emerald-500/20 text-emerald-400":"bg-sky-500/10 border-sky-500/20 text-sky-400"}`}>
-                              {event.subtype==="ofensivo"?"⚔️ OF":"🛡️ DEF"}
-                            </span>
-                          )}
-                          {result && (
-                            <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${result==="correcto"?"bg-green-500/10 border-green-500/20 text-green-400":"bg-rose-500/10 border-rose-500/20 text-rose-400"}`}>
-                              {result==="correcto"?"✓ OK":"✗ ERR"}
-                            </span>
-                          )}
-                          {event.player_name && <span className="text-xs font-mono text-cyan-400">👤 {event.player_name}</span>}
-                        </div>
-                      </div>
-                      <span className="text-xs font-mono text-[#484f58] bg-[#21262d] px-2 py-0.5 rounded shrink-0">{duration(start, end)}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs text-emerald-400 tabular-nums w-14 shrink-0">{fmt(start)}</span>
-                      <div className="flex-1 h-1.5 bg-[#21262d] rounded-full overflow-hidden">
-                        <div className="h-full bg-violet-500/60 rounded-full" style={{width:"100%"}} />
-                      </div>
-                      <span className="font-mono text-xs text-rose-400 tabular-nums w-14 text-right shrink-0">{fmt(end)}</span>
-                    </div>
-                    <div className="flex gap-1.5 flex-wrap">
-                      <button onClick={() => handlePreview(event)} className="flex items-center gap-1 px-2.5 py-1 bg-[#21262d] border border-[#30363d] hover:border-[#484f58] rounded-lg text-[#8b949e] hover:text-white font-mono text-xs transition-all">
-                        <Play className="w-3 h-3" /> Preview
-                      </button>
-                      <button onClick={() => handleSetStart(event)} className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 rounded-lg text-emerald-400 font-mono text-xs transition-all">
-                        ← INICIO AQUÍ
-                      </button>
-                      {isEditingEnd ? (
-                        <button onClick={() => handleSetEnd(event.id, event)} className="flex items-center gap-1 px-2.5 py-1 bg-amber-500/15 border border-amber-500/50 rounded-lg text-amber-400 font-mono text-xs animate-pulse transition-all">
-                          <Square className="w-3 h-3" /> ✓ CONFIRMAR FIN
-                        </button>
-                      ) : (
-                        <button onClick={() => handleSetEnd(event.id, event)} className="flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg text-rose-400 font-mono text-xs transition-all">
-                          FIN AQUÍ →
-                        </button>
-                      )}
-                      {onEditClip && (
-                        <button onClick={() => onEditClip(start, end)} className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 border border-violet-500/30 hover:bg-violet-500/20 rounded-lg text-violet-400 font-mono text-xs transition-all">
-                          ✏️ Editar clip
-                        </button>
-                      )}
-                    </div>
+            clips.map(ev => (
+              <div key={ev.id} className={`group p-3 rounded-lg border transition-all cursor-pointer ${
+                selected.has(ev.id)
+                  ? "bg-cyan-500/15 border-cyan-500/50"
+                  : "bg-[#1a2847]/50 border-[#2a3a5a] hover:border-[#3a5a7a]"
+              }`}
+              onClick={() => {
+                const newSelected = new Set(selected);
+                if (newSelected.has(ev.id)) newSelected.delete(ev.id);
+                else newSelected.add(ev.id);
+                setSelected(newSelected);
+              }}>
+                <div className="flex items-start gap-3">
+                  <input type="checkbox" checked={selected.has(ev.id)} onChange={() => {}} 
+                    className="mt-1 w-4 h-4 rounded accent-cyan-500" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white font-semibold text-xs truncate">`${ev.tipo}${ev.subtype ? " - " + ev.subtype : ""}`</p>
+                    <p className="text-[#8b9dc3] text-xs mt-0.5">
+                      <span className="font-mono">{fmt(ev.clip_start)}</span>
+                      <span className="mx-1">→</span>
+                      <span className="font-mono">{fmt(ev.clip_end)}</span>
+                      <span className="ml-2 text-cyan-400">{duration(ev.clip_start, ev.clip_end)}</span>
+                    </p>
                   </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Status: error details */}
-          {exportStatus === "error" && exportError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-rose-400 font-mono text-xs font-bold mb-0.5">Error al exportar</p>
-                <p className="text-[#8b949e] font-mono text-xs">{exportError}</p>
-                {clipErrors.length > 0 && (
-                  <ul className="mt-1 flex flex-col gap-0.5">
-                    {clipErrors.map((e, i) => <li key={i} className="text-[#484f58] font-mono text-xs">· {e}</li>)}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Status: partial success with some clip errors */}
-          {exportStatus === "done" && exportError && (
-            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-amber-400 font-mono text-xs">{exportError}</p>
-            </div>
-          )}
-
-          {/* Progress bar */}
-          {(exportStatus==="loading-ffmpeg"||exportStatus==="exporting"||exportStatus==="compiling") && exportProgress && (
-            <div className="p-3 bg-violet-500/10 border border-violet-500/30 rounded-xl">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />
-                  <p className="text-violet-400 font-mono text-xs truncate">
-                    {exportStatus==="loading-ffmpeg"?`Procesando... ${wasmPct}%`:exportProgress.label}
-                  </p>
+                  <button onClick={e => { e.stopPropagation(); playerRef.current?.seekTo(ev.clip_start); }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-[#2a3a5a] rounded">
+                    <Play className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400" />
+                  </button>
                 </div>
-                {exportStatus==="loading-ffmpeg"&&<span className="text-violet-300 font-mono text-xs shrink-0">{wasmPct}%</span>}
               </div>
-              <div className="w-full h-1.5 bg-[#21262d] rounded-full overflow-hidden">
-                <div className="h-full bg-violet-500 rounded-full transition-all duration-200"
-                  style={{width: exportStatus==="loading-ffmpeg"?`${wasmPct}%`:`${(exportProgress.current/exportProgress.total)*100}%`}} />
-              </div>
-              {exportStatus==="loading-ffmpeg"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Procesamiento en el navegador · puede tardar unos segundos</p>}
-              {exportStatus==="compiling"&&<p className="text-[#484f58] font-mono text-xs mt-1.5">Grabando clips en tiempo real...</p>}
+            ))
+          )}
+        </div>
+
+        {/* Export buttons */}
+        <div className="px-5 py-4 flex gap-2 justify-end border-b border-[#2a3a5a]">
+          {exportStatus === "idle" && (
+            <>
+              <button onClick={() => setOpen(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-[#8b9dc3] hover:text-white hover:bg-[#2a3a5a] transition-colors">
+                Cancelar
+              </button>
+              <button onClick={handleExportIndividual} disabled={selected.size === 0 || isBusy}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors">
+                ↓ Descargar {selected.size} clip{selected.size!==1?"s":""}
+              </button>
+              {hasLocalFile && (
+                <button onClick={handleCompile} disabled={selected.size === 0 || isBusy}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors">
+                  ⧈ Compilar en 1 video
+                </button>
+              )}
+            </>
+          )}
+          {exportStatus === "exporting" && (
+            <div className="flex items-center gap-2 text-cyan-400 text-xs font-mono">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>{exportProgress?.current}/{exportProgress?.total} clips...</span>
             </div>
           )}
-
-          {/* Info box when idle */}
-          {selected.size > 0 && exportStatus === "idle" && (
-            <div className="p-3 bg-[#161b22] border border-[#30363d] rounded-xl">
-              {hasLocalFile ? (
-                <>
-                  <p className="text-[#484f58] font-mono text-xs mb-1.5 uppercase tracking-widest">Opciones de exportación:</p>
-                  <div className="flex flex-col gap-1">
-                    <p className="text-[#8b949e] font-mono text-xs">
-                      <span className="text-violet-400">Videos individuales</span> — descarga cada clip por separado
-                    </p>
-                    <p className="text-[#8b949e] font-mono text-xs">
-                      <span className="text-amber-400">Compilar en 1 video</span> — une todos los clips seleccionados
-                    </p>
-                    <p className="text-[#484f58] font-mono text-xs mt-1">
-                      Compatible con CapCut, Premiere, DaVinci y cualquier editor
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <p className="text-[#484f58] font-mono text-xs mb-1 uppercase tracking-widest">Sin video local — se exporta JSON:</p>
-                  <p className="text-[#8b949e] font-mono text-xs">Cargá un video local para exportar video directamente</p>
-                </>
-              )}
+          {exportStatus === "compiling" && (
+            <div className="flex items-center gap-2 text-amber-400 text-xs font-mono">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Compilando...</span>
+            </div>
+          )}
+          {exportStatus === "done" && (
+            <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold">
+              <CheckCircle2 className="w-4 h-4" />
+              Listo
+            </div>
+          )}
+          {exportStatus === "error" && (
+            <div className="flex items-center gap-2 text-red-400 text-xs font-semibold">
+              <AlertCircle className="w-4 h-4" />
+              Error
             </div>
           )}
         </div>
-      )}
+
+        {/* Progress bar */}
+        {exportStatus !== "idle" && (
+          <div className="px-5 py-2 bg-[#1a2847]">
+            <div className="w-full h-1 bg-[#2a3a5a] rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all" 
+                style={{width: `${wasmPct}%`}} />
+            </div>
+          </div>
+        )}
+
+        {/* Error message */}
+        {exportError && (
+          <div className="px-5 py-3 bg-red-900/20 border-t border-red-500/30 flex gap-2">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-red-300">{exportError}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
