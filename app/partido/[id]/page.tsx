@@ -23,7 +23,6 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
   const [videoMode, setVideoMode] = useState<VideoMode>(null);
   const [showScore, setShowScore] = useState(true);
   const [showDrawEditor, setShowDrawEditor] = useState(false);
-  const [showClipPanel, setShowClipPanel] = useState(false);
   const [editClipRange, setEditClipRange] = useState<{start: number; end: number} | null>(null);
 
   const openClipEditor = useCallback((start: number, end: number) => {
@@ -179,8 +178,6 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
             playerRef={videoRef}
             onUpdateClip={(eventId, start, end) => updateClip(params.id, eventId, start, end)}
             onEditClip={videoMode === "local" ? openClipEditor : undefined}
-            open={showClipPanel}
-            setOpen={setShowClipPanel}
           />
 
           {/* Event list mobile */}
@@ -246,17 +243,6 @@ export default function PartidoPage({ params }: { params: { id: string } }) {
           events={partido.events}
           onClose={() => { setShowDrawEditor(false); setEditClipRange(null); }}
         />
-      )}
-
-      {/* Floating button to open clip editor */}
-      {partido.events.length > 0 && (
-        <button
-          onClick={() => setShowClipPanel(true)}
-          className="fixed bottom-6 right-6 px-4 py-2.5 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-sm flex items-center gap-2 shadow-lg hover:shadow-xl transition-all z-40"
-        >
-          <Download className="w-4 h-4" />
-          Descargar clips
-        </button>
       )}
     </div>
   );

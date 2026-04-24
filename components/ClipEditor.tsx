@@ -314,7 +314,7 @@ async function compileClipsUniversal(
 
 export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip, open: externalOpen, setOpen: externalSetOpen }: ClipEditorProps) {
   const [localOpen, setLocalOpen] = useState(false);
-  const open = externalOpen !== undefined ? externalOpen : localOpen;
+  const open = externalOpen !== undefined ? externalOpen : true; // Always visible
   const setOpen = externalSetOpen || setLocalOpen;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [settingEnd, setSettingEnd] = useState<string | null>(null);
@@ -514,11 +514,9 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
   const hasLocalFile = !!(playerRef.current as { getLocalFile?: () => File | null })?.getLocalFile?.();
 
   return (
-    <>
-      {open && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end z-50">
-          {/* Bottom panel — CapCut style */}
-          <div className="w-full bg-gradient-to-t from-[#0a0e27] via-[#0f1629] to-[#161e3a] border-t border-[#2a3a5a]">
+    <div className="w-full bg-gradient-to-t from-[#0a0e27] via-[#0f1629] to-[#161e3a] border-t border-[#2a3a5a] rounded-t-xl">
+      {/* Bottom panel — CapCut style */}
+      <div className="w-full">
         
         {/* Drag handle */}
         <div className="flex justify-center pt-3 pb-2">
@@ -664,7 +662,5 @@ export default function ClipEditor({ events, playerRef, onUpdateClip, onEditClip
         )}
       </div>
     </div>
-      )}
-    </>
   );
 }
